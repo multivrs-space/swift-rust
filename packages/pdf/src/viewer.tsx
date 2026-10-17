@@ -104,7 +104,7 @@ async function loadPdfJs(workerSrc: string | undefined): Promise<PdfJsModule> {
         const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
         mod.GlobalWorkerOptions.workerSrc = workerUrl;
       } catch {
-        mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${mod.version ?? "4.7.0"}/build/pdf.worker.min.mjs`;
+        mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${mod.version ?? "6.4.299"}/build/pdf.worker.min.mjs`;
       }
     }
     return mod;
@@ -113,7 +113,7 @@ async function loadPdfJs(workerSrc: string | undefined): Promise<PdfJsModule> {
 }
 
 function defaultWorkerSrc(): string {
-  return "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.0/build/pdf.worker.min.mjs";
+  return "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/build/pdf.worker.min.mjs";
 }
 
 function resolveSourceUrl(src: PdfSource): string {

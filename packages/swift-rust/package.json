@@ -1,6 +1,6 @@
 {
   "name": "swift-rust",
-  "version": "1.11.1",
+  "version": "1.11.3",
   "description": "The full-stack React framework powered with Rust + Bun. TSX-first, Rust rendering, 10x faster than Next.js, single binary deploy.",
   "license": "MIT",
   "homepage": "https://swift-rust.dev",
@@ -105,11 +105,11 @@
     "postinstall": "node ./scripts/postinstall.js"
   },
   "dependencies": {
-    "@dotenvx/dotenvx": "^1.0.0",
-    "@swift-rust/env": "^0.2.1",
+    "@dotenvx/dotenvx": "^2.38.0",
+    "@swift-rust/env": "^0.2.2",
     "@swift-rust/font": "^0.3.2",
     "@swift-rust/image": "^1.1.2",
-    "@swift-rust/pdf": "^0.2.2",
+    "@swift-rust/pdf": "^0.2.3",
     "@swift-rust/video": "^0.2.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

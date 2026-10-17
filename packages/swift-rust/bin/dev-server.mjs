@@ -1507,9 +1507,101 @@ async function resolveMetadata(layoutFiles, pageFile, params, segments) {
   return mergeMetadata(...metas);
 }
 
+let _appReactPromise = null;
+let _appReactDomEdgePromise = null;
+let _appReactDomServerPromise = null;
+
+function getAppRequire() {
+  try {
+    const pkgPath = join(cwd, "package.json");
+    if (existsSync(pkgPath)) return createRequire(pkgPath);
+  } catch {}
+  return createRequire(import.meta.url);
+}
+
+function evalCjsWithFunctionWrapper(filePath) {
+  const req = createRequire(filePath);
+  const mod = { exports: {} };
+  const fn = new Function(
+    "exports",
+    "require",
+    "module",
+    "__filename",
+    "__dirname",
+    readFileSync(filePath, "utf8"),
+  );
+  fn(mod.exports, req, mod, filePath, dirname(filePath));
+  return mod.exports;
+}
+
+async function loadAppReact() {
+  if (!_appReactPromise) {
+    _appReactPromise = (async () => {
+      try {
+        const req = getAppRequire();
+        return req("react");
+      } catch {
+        return import("react");
+      }
+    })();
+  }
+  return _appReactPromise;
+}
+
+async function loadAppReactDomEdge() {
+  if (!_appReactDomEdgePromise) {
+    _appReactDomEdgePromise = (async () => {
+      const req = getAppRequire();
+      try {
+        return req("react-dom/server.edge");
+      } catch (err) {
+        if (String(err?.message || "").includes("Expected CommonJS module")) {
+          const pkgJson = req.resolve("react-dom/package.json");
+          const reactDomDir = dirname(pkgJson);
+          const edgeProd = join(reactDomDir, "cjs", "react-dom-server.edge.production.js");
+          const legacyProd = join(
+            reactDomDir,
+            "cjs",
+            "react-dom-server-legacy.browser.production.js",
+          );
+          const b = evalCjsWithFunctionWrapper(edgeProd);
+          const l = existsSync(legacyProd) ? evalCjsWithFunctionWrapper(legacyProd) : {};
+          return { ...l, ...b };
+        }
+        return import("react-dom/server.edge");
+      }
+    })();
+  }
+  return _appReactDomEdgePromise;
+}
+
+async function loadAppReactDomServer() {
+  if (!_appReactDomServerPromise) {
+    _appReactDomServerPromise = (async () => {
+      const req = getAppRequire();
+      try {
+        return req("react-dom/server");
+      } catch (err) {
+        if (String(err?.message || "").includes("Expected CommonJS module")) {
+          const pkgJson = req.resolve("react-dom/package.json");
+          const reactDomDir = dirname(pkgJson);
+          const legacyProd = join(
+            reactDomDir,
+            "cjs",
+            "react-dom-server-legacy.browser.production.js",
+          );
+          return evalCjsWithFunctionWrapper(legacyProd);
+        }
+        return import("react-dom/server");
+      }
+    })();
+  }
+  return _appReactDomServerPromise;
+}
+
 async function renderToStringCompat(tree) {
   try {
-    const edge = await import("react-dom/server.edge");
+    const edge = await loadAppReactDomEdge();
     if (typeof edge.renderToReadableStream === "function") {
       const stream = await edge.renderToReadableStream(tree, {
         signal: AbortSignal.timeout(10000),
@@ -1528,8 +1620,7 @@ async function renderToStringCompat(tree) {
     if (err?.digest === "NOT_FOUND" || err?.name === "NotFoundError") throw err;
     if (err?.digest && String(err.digest).startsWith("REDIRECT")) throw err;
     try {
-      const React = await import("react");
-      const { renderToString } = await import("react-dom/server");
+      const { renderToString } = await loadAppReactDomServer();
       return renderToString(tree);
     } catch (innerErr) {
       if (innerErr?.digest === "NOT_FOUND" || innerErr?.name === "NotFoundError") throw innerErr;
@@ -1537,8 +1628,7 @@ async function renderToStringCompat(tree) {
       throw err;
     }
   }
-  const React = await import("react");
-  const { renderToString } = await import("react-dom/server");
+  const { renderToString } = await loadAppReactDomServer();
   return renderToString(tree);
 }
 
@@ -2188,7 +2278,7 @@ function findDynamicChild(dir) {
 // React element (the slot's matched page/fragment, its default.tsx, wrapped in
 // any slot layouts + a fallback.tsx Suspense boundary) or null.
 async function resolveSlotElement(slotDir, segs, req, intercepted) {
-  const React = await import("react");
+  const React = await loadAppReact();
   let leafFile = null;
   const slotLayouts = [];
   let matchedParams = {};
@@ -2336,7 +2426,7 @@ async function renderRoute(urlPath, req) {
   }
 
   try {
-    const React = await import("react");
+    const React = await loadAppReact();
     const url = req ? new URL(req.url) : new URL(urlPath, "http://localhost");
     const searchParams = Object.fromEntries(url.searchParams.entries());
     const ctx = buildRouteCtx(req, url, { ...route.params }, searchParams);
@@ -2478,7 +2568,7 @@ async function renderRoute(urlPath, req) {
     }
     if (errorFile) {
       try {
-        const React = await import("react");
+        const React = await loadAppReact();
         const errorMod = await loadModuleFresh(errorFile);
         const ErrorBoundary = errorMod.default ?? errorMod.ErrorBoundary ?? errorMod.error;
         if (ErrorBoundary) {
@@ -2491,7 +2581,7 @@ async function renderRoute(urlPath, req) {
     const recoveryFile = findRouteFileUp(segments, "error-recovery");
     if (recoveryFile) {
       try {
-        const React = await import("react");
+        const React = await loadAppReact();
         const mod = await loadModuleFresh(recoveryFile);
         const Recovery = mod.default ?? mod.ErrorRecovery;
         if (Recovery) {
@@ -2508,7 +2598,7 @@ async function renderRoute(urlPath, req) {
     const globalErrorFile = findFile(APP_DIR, "global-error");
     if (globalErrorFile) {
       try {
-        const React = await import("react");
+        const React = await loadAppReact();
         const mod = await loadModuleFresh(globalErrorFile);
         const GlobalError = mod.default ?? mod.GlobalError;
         if (GlobalError) {
@@ -2576,7 +2666,7 @@ async function renderPendingOverlay(segments) {
     if (cached && cached.gen === buildGeneration) {
       inner = cached.html;
     } else {
-      const React = await import("react");
+      const React = await loadAppReact();
       const mod = await loadModuleFresh(file);
       const Pending = mod.default ?? mod.Pending ?? mod.pending;
       if (!Pending) return "";
@@ -2595,7 +2685,7 @@ async function renderNotFound(segments) {
     return { status: 404, html: null, error: null, segments };
   }
   try {
-    const React = await import("react");
+    const React = await loadAppReact();
     const layouts = findLayoutsFor(segments || []);
     const mod = await loadModuleFresh(notFoundFile);
     const NotFound = mod.default ?? mod.NotFound ?? mod.notFound;

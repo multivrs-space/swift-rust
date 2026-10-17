@@ -72,7 +72,7 @@ export function Form({ action, children, onSubmit, ...props }: FormProps): React
   const isServerAction = typeof action === "function" && "$$actionId" in action;
   const actionId = isServerAction ? (action as ServerAction).$$actionId : undefined;
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit: NonNullable<React.FormHTMLAttributes<HTMLFormElement>["onSubmit"]> = (e) => {
     if (typeof onSubmit === "function") {
       onSubmit(e);
       if (e.defaultPrevented) return;

@@ -1,10 +1,9 @@
+import { siteConfig } from "@/lib/site.config";
 import { Link } from "swift-rust";
 import { useRouteRequest } from "swift-rust/router";
-import { siteConfig } from "@/lib/site.config";
 import { Logo } from "./logo";
 
 const NAV = [
-  { href: "/", label: "Home" },
   { href: "/blog", label: "Blog" },
   { href: "/fonts", label: "Fonts" },
   { href: "/images", label: "Images" },
@@ -29,17 +28,20 @@ export function Nav() {
   const pathname = useRouteRequest()?.url.pathname;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-bg/80 backdrop-blur-md">
-      {/* CSS-only mobile menu toggle: no client JS required (these pages are
-          static SSR). The peer checkbox drives the panel below. */}
+    <header className="sticky top-4 z-40 px-4 sm:px-6">
       <input type="checkbox" id="site-menu" className="peer sr-only" aria-label="Toggle menu" />
 
-      <div className="container-page flex h-14 items-center justify-between gap-8">
-        <Link href="/" aria-label="Home">
-          <Logo />
-        </Link>
+      <div className="mx-auto flex h-14 max-w-5xl items-center justify-between rounded-full border border-white/70 bg-white/65 px-3.5 shadow-[0_8px_32px_-6px_rgb(10_10_10/0.08),0_0_0_1px_rgb(10_10_10/0.05),inset_0_1px_0_0_rgb(255_255_255/0.85)] backdrop-blur-2xl backdrop-saturate-150 md:grid md:grid-cols-[1fr_auto_1fr]">
+        <div className="flex items-center pl-1.5">
+          <Link href="/" aria-label="Swift Rust Home" className="inline-flex items-center">
+            <Logo />
+          </Link>
+        </div>
 
-        <nav className="hidden items-center gap-1 md:flex">
+        <nav
+          aria-label="Main navigation"
+          className="hidden items-center justify-center gap-1 md:flex"
+        >
           {NAV.map((item) => {
             const active = isActivePath(pathname, item.href);
             return (
@@ -47,10 +49,10 @@ export function Nav() {
                 key={item.href}
                 href={item.href}
                 aria-current={active ? "page" : undefined}
-                className={`rounded-md px-3 py-1.5 text-[0.875rem] transition-colors ${
+                className={`rounded-full px-3.5 py-1.5 text-[0.84rem] font-medium transition-all ${
                   active
-                    ? "bg-accent-soft font-medium text-accent"
-                    : "text-fg-muted hover:bg-surface-2 hover:text-fg"
+                    ? "bg-white/90 text-accent shadow-xs ring-1 ring-black/[0.04]"
+                    : "text-fg-muted hover:bg-white/60 hover:text-fg"
                 }`}
               >
                 {item.label}
@@ -59,29 +61,33 @@ export function Nav() {
           })}
         </nav>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-end gap-2">
           <a
             href={siteConfig.githubUrl}
             target="_blank"
             rel="noreferrer"
-            className="btn btn-outline btn-sm hidden sm:inline-flex"
+            className="hidden h-9 items-center justify-center gap-1.5 rounded-full border border-black/[0.08] bg-white/75 px-3.5 text-[0.8125rem] font-medium text-fg shadow-2xs transition-all hover:bg-white sm:inline-flex"
           >
             <GitHubIcon />
-            GitHub
+            <span>GitHub</span>
           </a>
-          <Link href={siteConfig.docsUrl} className="btn btn-accent btn-sm hidden sm:inline-flex">
-            Get started
-          </Link>
+          <a
+            href={siteConfig.docsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-accent h-9 rounded-full px-4 text-[0.8125rem] font-semibold"
+          >
+            <span>Get Started</span>
+          </a>
 
-          {/* Hamburger / close — a label toggling the checkbox above. */}
           <label
             htmlFor="site-menu"
             aria-label="Toggle navigation menu"
-            className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-border text-fg md:hidden"
+            className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-black/[0.08] bg-white/75 text-fg md:hidden"
           >
             <svg
               viewBox="0 0 24 24"
-              className="h-5 w-5 peer-checked:hidden"
+              className="h-4 w-4 peer-checked:hidden"
               fill="none"
               stroke="currentColor"
               strokeWidth="2"
@@ -93,8 +99,10 @@ export function Nav() {
         </div>
       </div>
 
-      {/* Mobile dropdown panel — shown only when the checkbox is checked. */}
-      <nav className="hidden border-t border-border bg-bg px-4 py-3 peer-checked:block md:!hidden">
+      <nav
+        aria-label="Mobile navigation"
+        className="mx-auto mt-2 hidden max-w-5xl rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg ring-1 ring-black/[0.05] backdrop-blur-2xl peer-checked:block md:!hidden"
+      >
         <div className="flex flex-col gap-1">
           {NAV.map((item) => {
             const active = isActivePath(pathname, item.href);
@@ -103,9 +111,9 @@ export function Nav() {
                 key={item.href}
                 href={item.href}
                 aria-current={active ? "page" : undefined}
-                className={`rounded-md px-3 py-2 text-[0.95rem] transition-colors ${
+                className={`rounded-full px-4 py-2 text-[0.9rem] font-medium transition-colors ${
                   active
-                    ? "bg-accent-soft font-medium text-accent"
+                    ? "bg-accent-soft text-accent"
                     : "text-fg-muted hover:bg-surface-2 hover:text-fg"
                 }`}
               >
@@ -118,14 +126,19 @@ export function Nav() {
               href={siteConfig.githubUrl}
               target="_blank"
               rel="noreferrer"
-              className="btn btn-outline btn-sm flex-1 justify-center"
+              className="btn btn-outline btn-sm flex-1 justify-center rounded-full"
             >
               <GitHubIcon />
-              GitHub
+              <span>GitHub</span>
             </a>
-            <Link href={siteConfig.docsUrl} className="btn btn-accent btn-sm flex-1 justify-center">
-              Get started
-            </Link>
+            <a
+              href={siteConfig.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-accent btn-sm flex-1 justify-center rounded-full"
+            >
+              <span>Get Started</span>
+            </a>
           </div>
         </div>
       </nav>

@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/env",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Loads .env files and exposes validated environment variables.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@dotenvx/dotenvx": "^1.0.0"
+    "@dotenvx/dotenvx": "^2.38.0"
   },
   "devDependencies": {
     "typescript": "^6.0.0"

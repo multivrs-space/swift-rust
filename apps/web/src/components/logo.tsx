@@ -1,24 +1,21 @@
-import Image from "swift-rust/image";
 import { BLUR_TRANSPARENT } from "@/lib/blur";
+import Image from "swift-rust/image";
 
 export function Logo({ className = "" }: { className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-2 ${className}`}>
-      {/* Single-sourced from the favicon file (lightning + gear mark). The
-          favicon lives in the app dir, so use a passthrough loader instead of
-          the image-optimizer endpoint. */}
+    <span className={`inline-flex items-center gap-2.5 leading-none ${className}`}>
       <Image
         src="/favicon.svg"
         alt=""
         aria-hidden
-        width={24}
-        height={24}
+        width={26}
+        height={26}
         placeholder="blur"
         blurDataURL={BLUR_TRANSPARENT}
         loader={({ src }) => src}
-        className="h-6 w-6"
+        className="h-6.5 w-6.5 shrink-0 rounded-[6px]"
       />
-      <span className="text-[0.95rem] font-semibold tracking-tight text-fg">
+      <span className="font-display text-[1.025rem] font-bold leading-none tracking-tight text-fg">
         swift<span className="text-accent">·</span>rust
       </span>
     </span>
