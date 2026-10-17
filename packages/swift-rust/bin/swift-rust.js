@@ -11,8 +11,11 @@ import {
 const here = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const packageRoot = resolve(here, "..");
 const workspaceRoot = resolve(packageRoot, "../..");
-const [, , rawCmd, ...rest] = process.argv;
-const cmd = rawCmd || "help";
+const rawArgs = process.argv.slice(2);
+const useNative = process.env.SWIFT_RUST_NATIVE === "1" || rawArgs.includes("--native");
+const cleanArgs = rawArgs.filter((a) => a !== "--native");
+const cmd = cleanArgs[0] || "help";
+const rest = cleanArgs.slice(1);
 
 function findBun() {
   if (process.env.SWIFT_RUST_RUNTIME) return process.env.SWIFT_RUST_RUNTIME;
@@ -58,9 +61,13 @@ async function runBunScript(script, args, command) {
     return 1;
   }
   if (!checkBun(runtime)) return 1;
+  const env =
+    command === "build"
+      ? { ...process.env, NODE_ENV: process.env.NODE_ENV || "production" }
+      : process.env;
   const child = spawn(runtime, [script, ...args], {
     stdio: "inherit",
-    env: process.env,
+    env,
   });
   return await new Promise((resolveExit) => {
     child.on("exit", (code) => resolveExit(code ?? 1));
@@ -71,6 +78,40 @@ async function runBunScript(script, args, command) {
       resolveExit(1);
     });
   });
+}
+
+function getBinaryName() {
+  if (process.platform === "win32") return "swift-rust.exe";
+  return "swift-rust";
+}
+
+function findBinary() {
+  const name = getBinaryName();
+  const candidates = [
+    join(packageRoot, "native", `${process.platform}-${process.arch}`, name),
+    join(packageRoot, "native", name),
+    join(packageRoot, "bin", name),
+    join(workspaceRoot, "target", "release", name),
+    join(workspaceRoot, "target", "debug", name),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+const nativeBin = findBinary();
+
+if (nativeBin && (useNative || cmd === "start")) {
+  const child = spawn(nativeBin, cleanArgs, { stdio: "inherit", env: process.env });
+  const code = await new Promise((r) => {
+    child.on("exit", (c) => r(c ?? 1));
+    child.on("error", (error) => {
+      process.stderr.write(`swift-rust: failed to start native binary ${nativeBin} (${error.message}).\n`);
+      r(1);
+    });
+  });
+  process.exit(code);
 }
 
 if (cmd === "dev") {
@@ -158,25 +199,6 @@ if (cmd === "upgrade" || cmd === "update") {
   process.exit(code);
 }
 
-function getBinaryName() {
-  if (process.platform === "win32") return "swift-rust.exe";
-  return "swift-rust";
-}
-
-function findBinary() {
-  const name = getBinaryName();
-  const candidates = [
-    join(packageRoot, "native", `${process.platform}-${process.arch}`, name),
-    join(packageRoot, "native", name),
-    join(packageRoot, "bin", name),
-    join(workspaceRoot, "target", "release", name),
-    join(workspaceRoot, "target", "debug", name),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
 
 function isMonorepo() {
   return existsSync(join(workspaceRoot, "Cargo.toml"));
@@ -199,7 +221,7 @@ function cargoRun() {
 
 const bin = findBinary();
 if (bin) {
-  const child = spawn(bin, process.argv.slice(2), { stdio: "inherit", env: process.env });
+  const child = spawn(bin, cleanArgs, { stdio: "inherit", env: process.env });
   const code = await new Promise((r) => {
     child.on("exit", (c) => r(c ?? 1));
     child.on("error", (error) => {

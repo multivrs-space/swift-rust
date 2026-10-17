@@ -19,6 +19,10 @@ export function renderMarkdown(src: string): ReactNode[] {
 
   while (i < lines.length) {
     const line = lines[i];
+    if (line === undefined) {
+      i++;
+      continue;
+    }
 
     // blank
     if (line.trim() === "") {
@@ -31,8 +35,10 @@ export function renderMarkdown(src: string): ReactNode[] {
       const lang = line.trim().slice(3).trim();
       const buf: string[] = [];
       i++;
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        buf.push(lines[i]);
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (cur === undefined || cur.trim().startsWith("```")) break;
+        buf.push(cur);
         i++;
       }
       i++; // closing fence
@@ -53,7 +59,7 @@ export function renderMarkdown(src: string): ReactNode[] {
 
     // heading
     const h = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (h) {
+    if (h && h[1] && h[2]) {
       const level = h[1].length;
       const content = inline(h[2]);
       if (level === 1) out.push(<h1 key={k()}>{content}</h1>);
@@ -65,12 +71,15 @@ export function renderMarkdown(src: string): ReactNode[] {
     }
 
     // table
-    if (line.trim().startsWith("|") && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+    const nextLine = lines[i + 1];
+    if (line.trim().startsWith("|") && nextLine !== undefined && isTableSep(nextLine)) {
       const header = splitRow(line);
       i += 2; // header + separator
       const rows: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        rows.push(splitRow(lines[i]));
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (cur === undefined || !cur.trim().startsWith("|")) break;
+        rows.push(splitRow(cur));
         i++;
       }
       const cell = { padding: "0.5rem", borderBottom: "1px solid var(--border)" } as const;
@@ -104,8 +113,10 @@ export function renderMarkdown(src: string): ReactNode[] {
     // unordered list
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (cur === undefined || !/^\s*[-*]\s+/.test(cur)) break;
+        items.push(cur.replace(/^\s*[-*]\s+/, ""));
         i++;
       }
       out.push(
@@ -179,7 +190,12 @@ function inline(text: string): ReactNode {
       nodes.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
     } else {
       const link = /\[([^\]]+)\]\(([^)]+)\)/.exec(tok);
-      if (link) nodes.push(<a key={key++} href={link[2]}>{link[1]}</a>);
+      if (link && link[1] && link[2])
+        nodes.push(
+          <a key={key++} href={link[2]}>
+            {link[1]}
+          </a>,
+        );
     }
     last = m.index + tok.length;
   }

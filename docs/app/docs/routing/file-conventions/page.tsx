@@ -187,8 +187,8 @@ export const matcher = ["/old", "/blog/**"];`}</Code>
       <h2>Runtimes — bun · edge · node</h2>
       <p>
         Every route declares a runtime. <strong>Bun is the default</strong> (fast, global). Force a
-        different one with a top‑of‑file directive — it applies to the file{" "}
-        <em>and its tree</em>, just like <code>&quot;use client&quot;</code>:
+        different one with a top‑of‑file directive — it applies to the file <em>and its tree</em>,
+        just like <code>&quot;use client&quot;</code>:
       </p>
       <Code lang="app/dashboard/page.tsx">{`'use bun';   // ← or 'use edge' / 'use node'
 
@@ -204,22 +204,21 @@ export default function Dashboard() {
   → swift-rust.config.json "runtime"  // project default
   → 'bun'                              // built-in default`}</Code>
       <p>
-        The resolved runtime is exposed to every routing file as{" "}
-        <code>ctx.runtime</code> and emitted on the response as{" "}
-        <code>x-swift-rust-runtime</code>. <code>edge.ts</code> / <code>worker.ts</code> remain a
-        file‑based way to force the Edge / Workers runtime.
+        The resolved runtime is exposed to every routing file as <code>ctx.runtime</code> and
+        emitted on the response as <code>x-swift-rust-runtime</code>. <code>edge.ts</code> /{" "}
+        <code>worker.ts</code> remain a file‑based way to force the Edge / Workers runtime.
       </p>
       <p>
-        <strong>What each runtime builds to.</strong> A route that explicitly opts into a runtime
-        (a directive or <code>config.ts</code> runtime) is emitted as a request‑time{" "}
+        <strong>What each runtime builds to.</strong> A route that explicitly opts into a runtime (a
+        directive or <code>config.ts</code> runtime) is emitted as a request‑time{" "}
         <strong>Vercel Function</strong> on that runtime — its full pipeline (<code>proxy</code>,{" "}
         <code>schema</code>, <code>guard</code>, <code>action</code>, <code>loader</code>,{" "}
         <code>state</code>, <code>seo</code>) runs per request:
       </p>
       <ul>
         <li>
-          <code>bun</code> — a Bun function (the build sets{" "}
-          <code>vercel.json</code> → <code>{'"bunVersion": "1.x"'}</code>).
+          <code>bun</code> — a Bun function (the build sets <code>vercel.json</code> →{" "}
+          <code>{'"bunVersion": "1.x"'}</code>).
         </li>
         <li>
           <code>node</code> — a Node.js serverless function.
@@ -229,9 +228,10 @@ export default function Dashboard() {
         </li>
       </ul>
       <p>
-        Routes with no explicit runtime keep the default: <strong>prerendered to static HTML</strong>{" "}
-        served from the global edge CDN (the fastest path). So <code>bun</code> is the default for
-        request‑time routes, and static is the default for everything else.
+        Routes with no explicit runtime keep the default:{" "}
+        <strong>prerendered to static HTML</strong> served from the global edge CDN (the fastest
+        path). So <code>bun</code> is the default for request‑time routes, and static is the default
+        for everything else.
       </p>
 
       <h2>revalidate.ts — cache control</h2>
@@ -435,6 +435,63 @@ export const duration = 250;    // ms`}</Code>
     </html>
   );
 }`}</Code>
+
+      <h2>instrumentation.ts — startup hooks</h2>
+      <p>
+        Place <code>instrumentation.ts</code> in your project root (or <code>src/</code>) and export
+        a <code>register()</code> function to initialize OpenTelemetry, error trackers, or database
+        connection pools once when the server starts.
+      </p>
+      <Code lang="src/instrumentation.ts">{`export async function register() {
+  await initTelemetry({ serviceName: "my-app" });
+}`}</Code>
+
+      <h2>robots.ts &amp; sitemap.ts — dynamic SEO</h2>
+      <p>
+        Generate <code>/robots.txt</code> and <code>/sitemap.xml</code> dynamically at request time
+        or pre-render them at build time by placing <code>robots.ts</code> and{" "}
+        <code>sitemap.ts</code> in your <code>app/</code> root.
+      </p>
+      <Code lang="app/robots.ts">{`export default function robots() {
+  return {
+    rules: [{ userAgent: "*", allow: ["/"], disallow: ["/admin"] }],
+    sitemap: "https://example.com/sitemap.xml",
+  };
+}`}</Code>
+      <Code lang="app/sitemap.ts">{`export default async function sitemap() {
+  return [
+    { url: "https://example.com/", lastModified: "2026-01-01", priority: 1.0 },
+  ];
+}`}</Code>
+
+      <h2>Folder &amp; segment conventions</h2>
+      <ul>
+        <li>
+          <code>[param]</code> — single dynamic segment (<code>ctx.params.param</code>).
+        </li>
+        <li>
+          <code>[...slug]</code> — catch‑all segment matching one or more path parts.
+        </li>
+        <li>
+          <code>[[...slug]]</code> — optional catch‑all matching the base route as well as nested
+          segments.
+        </li>
+        <li>
+          <code>(group)</code> — route group; organizes files without appearing in the URL path.
+        </li>
+        <li>
+          <code>(.)segment</code>, <code>(..)segment</code>, <code>(...)segment</code> —
+          intercepting routes that render a modal/overlay on soft client navigation while rendering
+          the target page on hard refresh.
+        </li>
+        <li>
+          <code>_folder</code> — private folder; opted out of routing completely.
+        </li>
+        <li>
+          <code>%5Ffolder</code> — URL‑escaped underscore; maps to a literal <code>/_folder</code>{" "}
+          URL segment.
+        </li>
+      </ul>
     </DocArticle>
   );
 }

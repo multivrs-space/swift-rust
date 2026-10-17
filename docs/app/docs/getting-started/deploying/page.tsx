@@ -79,10 +79,16 @@ CMD ["/usr/local/bin/app"]`}</code>
       <ol>
         <li>Push your project to a GitHub repository.</li>
         <li>
-          Go to <a href="https://vercel.com/new" target="_blank" rel="noopener">vercel.com/new</a>
-          {" "}and import the repo.
+          Go to{" "}
+          <a href="https://vercel.com/new" target="_blank" rel="noopener">
+            vercel.com/new
+          </a>{" "}
+          and import the repo.
         </li>
-        <li>Click <strong>Deploy</strong>. Vercel will run <code>bun run build</code> which produces <code>.vercel/output/</code> and serves it on the CDN.</li>
+        <li>
+          Click <strong>Deploy</strong>. Vercel will run <code>bun run build</code> which produces{" "}
+          <code>.vercel/output/</code> and serves it on the CDN.
+        </li>
       </ol>
       <p>
         The static export supports pre-rendered pages, 404 handling, immutable asset caching, and

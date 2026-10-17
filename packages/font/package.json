@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/font",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Font component for swift-rust.",
   "license": "MIT",
   "homepage": "https://swift-rust.dev",

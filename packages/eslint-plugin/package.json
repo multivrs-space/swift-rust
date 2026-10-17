@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/eslint-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ESLint rules for swift-rust projects.",
   "license": "MIT",
   "type": "module",

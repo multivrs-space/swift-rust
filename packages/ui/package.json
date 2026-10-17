@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/ui",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "swift-rust ui — a shadcn-style component registry with a third style dimension (variant × size × design) built for Tailwind v4.",
   "license": "MIT",
   "homepage": "https://swift-rust.dev",

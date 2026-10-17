@@ -52,6 +52,45 @@ impl Error {
             Self::Unknown(_) => "SR0010",
         }
     }
+
+    pub fn solution(&self) -> &'static str {
+        match self {
+            Self::Config { .. } => {
+                "Check swift-rust.config.json for valid JSON syntax and supported keys (rendering, image, font, pdf)."
+            }
+            Self::Routing { .. } => {
+                "Verify that your route files (page.tsx, layout.tsx, route.ts) live inside src/app/ or app/ and export a default handler."
+            }
+            Self::Compilation { .. } => {
+                "Check the highlighted file for syntax errors, missing imports, or mismatched named/default exports."
+            }
+            Self::Bundling { .. } => {
+                "Ensure all imports in 'use client' files are browser-compatible and run `bun run build` if workspace packages were cleaned."
+            }
+            Self::Server { .. } => {
+                "Verify the requested port is free (or pass `--port <number>`) and check your server handler for unhandled exceptions."
+            }
+            Self::Image { .. } => {
+                "Verify the image file exists in `public/` and uses a supported format (PNG, JPEG, WebP, AVIF, SVG)."
+            }
+            Self::Font { .. } => {
+                "Check the font family name in `swift-rust/font/google` or verify the local font file path exists."
+            }
+            Self::Pdf { .. } => {
+                "Verify the PDF <Document> and <Page> tree uses valid dimensions and serializable props."
+            }
+            Self::Io(_) => {
+                "Verify the file or directory exists and that the current user has read/write permissions."
+            }
+            Self::Unknown(_) => {
+                "Check the error details above and run `bun run typecheck` to inspect full diagnostics."
+            }
+        }
+    }
+
+    pub fn format_diagnostic(&self) -> String {
+        format!("✗ {}\n│\n│ 💡 Solution: {}", self, self.solution())
+    }
 }
 
 impl From<std::io::Error> for Error {
@@ -71,5 +110,21 @@ impl From<toml::de::Error> for Error {
         Self::Config {
             message: e.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_diagnostic_with_clear_solution() {
+        let err = Error::Bundling {
+            message: "Could not resolve './missing'".to_string(),
+        };
+        let out = err.format_diagnostic();
+        assert!(out.contains("[SR0004]"));
+        assert!(out.contains("💡 Solution:"));
+        assert!(out.contains("browser-compatible"));
     }
 }

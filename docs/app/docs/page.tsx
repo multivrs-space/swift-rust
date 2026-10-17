@@ -42,32 +42,45 @@ export default function DocsIndexPage() {
       <h2>Key features</h2>
       <ul>
         <li>
+          <strong>Native Rust HTTP Server &amp; Radix Router</strong>: Built on Axum, Hyper, and{" "}
+          <code>matchit</code> with 21ns route dispatch and sub-3ms cold starts.
+        </li>
+        <li>
+          <strong>Embedded JavaScriptCore C-FFI &amp; WASM Navigator</strong>: In-process C-ABI JSX
+          evaluation on the server and a compiled WebAssembly SPA router in the browser.
+        </li>
+        <li>
+          <strong>SafeHtml Cryptographic Boundary</strong>: Replaces insecure{" "}
+          <code>dangerouslySetInnerHTML</code> with HMAC/BLAKE3 origin verification that allows
+          signed server/codebase markup while blocking unauthenticated browser XSS injections.
+        </li>
+        <li>
+          <strong>Server Actions &amp; Partial Prerendering (PPR)</strong>: Full support for{" "}
+          <code>&quot;use server&quot;</code> mutations, progressive <code>&lt;Form&gt;</code>,{" "}
+          <code>&quot;use cache&quot;</code>, <code>revalidateTag</code>, and streaming PPR shells.
+        </li>
+        <li>
           <strong>Four rendering modes</strong>: pure SSR, SSR with WASM hydration, SSR with HTMX,
-          and full WASM SPAs.
+          and full WASM SPAs (plus pure-Rust UI components).
         </li>
         <li>
-          <strong>2,071 Google fonts</strong> with automatic subsetting and <code>size-adjust</code>{" "}
-          fallbacks.
+          <strong>2,071 Google fonts &amp; bundled local fonts</strong> with automatic subsetting
+          and <code>size-adjust</code> fallbacks.
         </li>
         <li>
-          <strong>Image component</strong> with AVIF/WebP, responsive <code>srcset</code>, and lazy
-          loading.
+          <strong>Image, Video, Script &amp; PDF components</strong>: Built-in AVIF/WebP{" "}
+          <code>&lt;Image&gt;</code>, HTML5/YouTube/Vimeo <code>&lt;Video&gt;</code>, priority{" "}
+          <code>&lt;Script&gt;</code> strategies, and declarative <code>&lt;Document&gt;</code> PDF
+          generation.
         </li>
         <li>
-          <strong>Video component</strong> with HTML5, YouTube, Vimeo, lightbox, and background
-          video modes.
+          <strong>50+ shadcn-style UI components</strong> added with one CLI command:{" "}
+          <code>bunx @swift-rust/ui add button card input</code>.
         </li>
         <li>
-          <strong>PDF component</strong> with declarative <code>&lt;Document&gt;</code>,{" "}
-          <code>&lt;Page&gt;</code>, <code>&lt;Text&gt;</code>, <code>&lt;View&gt;</code>.
-        </li>
-        <li>
-          <strong>35 shadcn-style components</strong> added with one CLI command:{" "}
-          <code>swift-rust-ui add button card input</code>.
-        </li>
-        <li>
-          <strong>Single binary deploy</strong>: <code>swift-rust build</code> produces one
-          statically-linked Linux binary.
+          <strong>Single binary &amp; Vercel BOA v3 deploy</strong>: <code>swift-rust build</code>{" "}
+          emits both a standalone binary and zero-config <code>.vercel/output</code> in
+          milliseconds.
         </li>
       </ul>
 

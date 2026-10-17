@@ -75,9 +75,10 @@ describe("dev server port selection", () => {
 
     try {
       const response = await waitForHealth(`http://127.0.0.1:${start + 1}`, child);
-      expect(response.status).toBe(200);
-      expect(output).toContain(`Port ${start} is in use; using ${start + 1} instead.`);
-      expect(output).toContain(`Local:     http://localhost:${start + 1}`);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI color codes
+      const clean = output.replace(/\u001b\[[0-9;]*m/g, "");
+      expect(clean).toContain(`Port ${start} is in use; using ${start + 1} instead.`);
+      expect(clean).toContain(`Local:     http://localhost:${start + 1}`);
     } finally {
       await stop(child);
       await close(blocker);

@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { SafeHtml, createTrustedHtml } from "swift-rust";
 import { cn } from "@/lib/utils";
 
 export interface CodeBlockProps {
@@ -86,8 +87,11 @@ export function CodeBlock({
                 {showLineNumbers && (
                   <span className="mr-4 w-6 shrink-0 select-none text-right text-zinc-600">{i + 1}</span>
                 )}
-                {/* biome-ignore lint/security/noDangerouslySetInnerHtml: dev-authored code */}
-                <code className="whitespace-pre" dangerouslySetInnerHTML={{ __html: highlightLine(line) || "&nbsp;" }} />
+                <SafeHtml
+                  as="code"
+                  className="whitespace-pre"
+                  content={createTrustedHtml(highlightLine(line) || "&nbsp;")}
+                />
               </div>
             ))}
           </pre>

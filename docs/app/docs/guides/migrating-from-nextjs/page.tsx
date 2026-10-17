@@ -54,6 +54,16 @@ export default function MigratingPage() {
           <code>next/link</code> → <code>swift-rust</code> (the <code>Link</code> component)
         </li>
         <li>
+          <code>next/script</code> → <code>swift-rust</code> (the <code>Script</code> component)
+        </li>
+        <li>
+          <code>next/form</code> → <code>swift-rust</code> (the <code>Form</code> component)
+        </li>
+        <li>
+          <code>next/cache</code> → <code>swift-rust</code> (<code>revalidatePath</code>,{" "}
+          <code>revalidateTag</code>, <code>cache</code>)
+        </li>
+        <li>
           <code>next/navigation</code> → <code>swift-rust/router</code>
         </li>
         <li>
@@ -61,27 +71,34 @@ export default function MigratingPage() {
         </li>
       </ul>
 
-      <h3>Removed</h3>
+      <h3>Upgraded &amp; Replaced Primitives</h3>
       <ul>
         <li>
-          <code>next.config.js</code> → <code>swift-rust.config.json</code> (JSON, not JS)
+          <code>dangerouslySetInnerHTML</code> → <code>&lt;SafeHtml&gt;</code> &amp;{" "}
+          <code>createTrustedHtml()</code> from <code>swift-rust</code>. Unauthenticated raw strings
+          injected in the browser are automatically blocked and escaped.
         </li>
         <li>
-          <code>next-env.d.ts</code> → not needed; types come from <code>swift-rust</code> directly
+          <code>middleware.ts</code> → <code>proxy.ts</code> (matches Next.js 16+ proxy convention;
+          runs at the root and per-segment).
         </li>
         <li>
-          <code>next/script</code> → use a <code>&lt;script&gt;</code> tag with{" "}
-          <code>dangerouslySetInnerHTML</code> or import the script at the top of a{" "}
-          <code>"use client"</code> component
+          <code>next.config.js</code> → <code>swift-rust.config.json</code> or{" "}
+          <code>defineConfig()</code>.
         </li>
         <li>
-          <code>useRouter</code> from <code>next/navigation</code> → from{" "}
-          <code>swift-rust/router</code>
+          <code>next-env.d.ts</code> → not needed; types come from <code>swift-rust</code> directly.
         </li>
       </ul>
 
-      <h3>Server actions</h3>
-      <p>Server actions work the same way. The only difference is the import path.</p>
+      <h3>Server actions, PPR &amp; Special Files</h3>
+      <p>
+        Server actions (<code>&quot;use server&quot;</code>), Partial Prerendering (
+        <code>experimental_ppr = true</code>), <code>&quot;use cache&quot;</code>,{" "}
+        <code>template.tsx</code>, <code>default.tsx</code>, <code>instrumentation.ts</code>,{" "}
+        <code>robots.ts</code>, and <code>sitemap.ts</code> all work out of the box with zero
+        configuration changes.
+      </p>
 
       <h3>Image loader</h3>
       <p>

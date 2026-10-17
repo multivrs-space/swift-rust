@@ -8,7 +8,7 @@
     "dev": "swift-rust dev",
     "build": "swift-rust build",
     "start": "swift-rust start",
-    "lint": "biome check .",
+    "lint": "biome check --no-errors-on-unmatched .",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

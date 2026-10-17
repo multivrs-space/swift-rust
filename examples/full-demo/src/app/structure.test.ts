@@ -2,15 +2,15 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const APP = join(import.meta.dir, "..", "..", "app");
-const SRC = join(APP, "src");
+const ROOT = join(import.meta.dir, "..", "..");
+const SRC = import.meta.dir;
 
 describe("full-demo structure", () => {
-  it("has app directory", () => {
-    expect(existsSync(APP)).toBe(true);
+  it("has root directory", () => {
+    expect(existsSync(ROOT)).toBe(true);
   });
 
-  it("has app/src directory", () => {
+  it("has src/app directory", () => {
     expect(existsSync(SRC)).toBe(true);
   });
 

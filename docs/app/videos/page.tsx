@@ -1,6 +1,6 @@
 "use client";
 import { type ChangeEvent, useState } from "react";
-import { Video, isYouTubeUrl } from "swift-rust";
+import { isYouTubeUrl, Video } from "swift-rust";
 
 const YOUTUBE_URL = "https://youtu.be/rTJzsHwpZko?si=dyq6s5btq7MnASdS";
 const YOUTUBE_ID = "rTJzsHwpZko";

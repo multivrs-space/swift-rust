@@ -9,6 +9,8 @@
 //! `axum`, `tokio`, or `serde_yaml` here, put it in a more specific crate
 //! instead.
 
+pub mod component;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;

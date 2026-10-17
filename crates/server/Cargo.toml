@@ -30,6 +30,7 @@ mime = { workspace = true }
 url = { workspace = true }
 http = "1"
 bytes = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

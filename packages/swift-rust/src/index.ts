@@ -93,6 +93,8 @@ export type {
   ViewProps,
 } from "@swift-rust/pdf";
 export { Document, Page, Text, View } from "@swift-rust/pdf";
+export type { FormProps, ServerAction } from "./action";
+export { createServerAction, Form } from "./action";
 export type { CacheEntry, CacheOptions } from "./cache";
 export { cache, clearCache, revalidatePath, revalidateTag } from "./cache";
 export type { HeadProps as MetaHeadProps } from "./head";
@@ -101,6 +103,16 @@ export type { LinkProps as LinkComponentProps } from "./link";
 export { Link } from "./link";
 export type { LayoutProps, PageProps, RouteHandler, RouteHandlerContext } from "./router";
 export { NotFoundError, notFound, permanentRedirect, RedirectError, redirect } from "./router";
+export type { SafeHtmlProps, TrustedHtml } from "./safe-html";
+export {
+  createTrustedHtml,
+  isTrustedHtml,
+  SafeHtml,
+  sanitizeHtml,
+  TRUSTED_HTML_SYMBOL,
+} from "./safe-html";
+export type { ScriptProps, ScriptStrategy } from "./script";
+export { Script } from "./script";
 export type {
   BackgroundVideoProps,
   VideoCaption,

@@ -3056,7 +3056,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swift-rust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3085,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "bytes",
@@ -3104,7 +3104,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-build"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-build-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "insta",
  "swift-rust-build",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-bundler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3162,7 +3162,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-code-frame"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 1.0.69",
  "unicode-width",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "config",
  "insta",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "once_cell",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-custom-transforms"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -3205,14 +3205,14 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-error-code-swc-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "swift-rust-errors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "insta",
  "serde",
@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-font"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-image"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-napi-bindings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "napi",
  "napi-derive",
@@ -3278,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3296,8 +3296,9 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "blake3",
  "console_error_panic_hook",
  "console_log",
  "futures",
@@ -3319,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3329,6 +3330,7 @@ dependencies = [
  "insta",
  "matchit",
  "mime",
+ "reqwest",
  "serde",
  "serde_json",
  "swift-rust-bundler",
@@ -3345,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-taskless"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3358,7 +3360,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "insta",
  "serde",
@@ -3370,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "swift-rust-video"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3954,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "js-sys",
  "serde",

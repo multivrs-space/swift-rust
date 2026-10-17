@@ -4,7 +4,11 @@ import { join, resolve, extname, relative, dirname, basename, sep } from "node:p
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
-import { errorOverlayHTML as renderErrorOverlay } from "./error-overlay.mjs";
+import {
+  errorOverlayHTML as renderErrorOverlay,
+  formatTerminalError,
+  normalizeBuildError,
+} from "./error-overlay.mjs";
 import {
   isSupportedBunVersion,
   unsupportedBunMessage,
@@ -160,18 +164,8 @@ function logCompiling(route) {
 }
 
 function logError(err, context) {
-  const msg = err?.message || String(err);
-  const lines = msg.split("\n");
-  logLine([` ${paint("red", "✗")} ${paint("red", context || "Error")}`]);
-  for (const line of lines) {
-    logLine([paint("red", line)], 1);
-  }
-  if (err?.stack) {
-    const stackLines = err.stack.split("\n").slice(1, 6);
-    for (const line of stackLines) {
-      logLine([paint("dim", line.trim())], 1);
-    }
-  }
+  const { formatted } = formatTerminalError(err, context || "Error", cwd, paint);
+  process.stdout.write(`${formatted}\n`);
 }
 
 function logRequest({ method, url, status, duration, compileMs }) {
@@ -210,12 +204,132 @@ function findFile(dir, basename) {
   return null;
 }
 
-function resolvePageRoute(segments) {
-  if (segments.length === 0) {
-    const file = findFile(APP_DIR, "page");
-    if (file) return { file, params: {}, segments: [], dirChain: [APP_DIR] };
-    return null;
+const OPT_CATCH_PARAM = /^\[\[\.{3}([^\]]+)\]\]$/;
+const CATCH_PARAM = /^\[\.{3}([^\]]+)\]$/;
+const NAMED_PARAM = /^\[([^\]]+)\]$/;
+
+function isPrivateDir(name) {
+  return name.startsWith("_");
+}
+
+function parseInterceptSegment(name) {
+  if (name.startsWith("(.)")) {
+    return { kind: "same", levelsUp: 0, firstSeg: name.slice(3) };
   }
+  if (name.startsWith("(...)")) {
+    return { kind: "root", levelsUp: Infinity, firstSeg: name.slice(5) };
+  }
+  const m = name.match(/^((?:\(\.\.\))+)(.+)$/);
+  if (m) {
+    const levelsUp = m[1].length / 4;
+    return { kind: "up", levelsUp, firstSeg: m[2] };
+  }
+  return null;
+}
+
+function matchPatternSegments(pattern, segments) {
+  const params = {};
+  let pi = 0;
+  let si = 0;
+  while (pi < pattern.length && si < segments.length) {
+    const p = pattern[pi];
+    const s = segments[si];
+    if (p.startsWith("[[...") && p.endsWith("]]")) {
+      params[p.slice(5, -2)] = segments.slice(si);
+      return { matched: true, params };
+    }
+    if (p.startsWith("[...") && p.endsWith("]")) {
+      params[p.slice(4, -1)] = segments.slice(si);
+      return { matched: true, params };
+    }
+    if (p.startsWith("[") && p.endsWith("]")) {
+      params[p.slice(1, -1)] = s;
+      pi++;
+      si++;
+      continue;
+    }
+    if (p !== s) return { matched: false };
+    pi++;
+    si++;
+  }
+  if (pi === pattern.length && si === segments.length) {
+    return { matched: true, params };
+  }
+  if (pi === pattern.length - 1 && pattern[pi].startsWith("[[...") && pattern[pi].endsWith("]]") && si === segments.length) {
+    params[pattern[pi].slice(5, -2)] = undefined;
+    return { matched: true, params };
+  }
+  return { matched: false };
+}
+
+function findInterceptingRoutes(root = APP_DIR) {
+  const list = [];
+  function walk(currentDir) {
+    if (!existsSync(currentDir) || !statSync(currentDir).isDirectory()) return;
+    let entries;
+    try {
+      entries = readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (isPrivateDir(e.name) || e.name.startsWith(".") || e.name === "node_modules") continue;
+      const intercept = parseInterceptSegment(e.name);
+      if (intercept) {
+        let slotName = null;
+        let ownerDir = currentDir;
+        if (basename(currentDir).startsWith("@")) {
+          slotName = basename(currentDir).slice(1);
+          ownerDir = dirname(currentDir);
+        }
+        const rel = relative(APP_DIR, ownerDir);
+        const declaringSegments = (rel === "" || rel === ".")
+          ? []
+          : rel.split(sep).filter((s) => !s.startsWith("@") && !/^\(.*\)$/.test(s));
+        let baseSegments;
+        if (intercept.kind === "root") {
+          baseSegments = [];
+        } else if (intercept.kind === "same") {
+          baseSegments = declaringSegments;
+        } else {
+          baseSegments = declaringSegments.slice(0, Math.max(0, declaringSegments.length - intercept.levelsUp));
+        }
+
+        const interceptDir = join(currentDir, e.name);
+        function findPagesInIntercept(dir, childSegs, chain) {
+          const page = findFile(dir, "page");
+          if (page) {
+            list.push({
+              patternSegments: [...baseSegments, intercept.firstSeg, ...childSegs],
+              ownerDir,
+              slotName,
+              pageFile: page,
+              dirChain: chain,
+            });
+          }
+          let childEntries;
+          try {
+            childEntries = readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+          for (const ce of childEntries) {
+            if (!ce.isDirectory() || ce.name.startsWith(".") || isPrivateDir(ce.name)) continue;
+            findPagesInIntercept(join(dir, ce.name), [...childSegs, ce.name], [...chain, join(dir, ce.name)]);
+          }
+        }
+        findPagesInIntercept(interceptDir, [], [APP_DIR, ...(ownerDir !== APP_DIR ? [ownerDir] : []), interceptDir]);
+      } else {
+        walk(join(currentDir, e.name));
+      }
+    }
+  }
+  walk(root);
+  return list;
+}
+
+function resolvePageRoute(segments) {
   return resolveRoute(APP_DIR, segments, 0, {}, [APP_DIR]);
 }
 
@@ -223,25 +337,88 @@ function resolveRoute(dir, segments, idx, params, chain) {
   if (idx === segments.length) {
     const file = findFile(dir, "page");
     if (file) return { file, params, segments: segments.slice(0, idx), dirChain: chain };
+    if (existsSync(dir) && statSync(dir).isDirectory()) {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+        const m = e.name.match(OPT_CATCH_PARAM);
+        if (m) {
+          const optDir = join(dir, e.name);
+          const optFile = findFile(optDir, "page");
+          if (optFile) {
+            return {
+              file: optFile,
+              params: { ...params, [m[1]]: undefined },
+              segments: segments.slice(0, idx),
+              dirChain: [...chain, optDir],
+            };
+          }
+        }
+      }
+    }
     return null;
   }
   const seg = segments[idx];
-  const directDir = join(dir, seg);
-  if (existsSync(directDir) && statSync(directDir).isDirectory()) {
+  let directDir = null;
+  if (seg.startsWith("_")) {
+    const enc1 = join(dir, "%5F" + seg.slice(1));
+    const enc2 = join(dir, "%5f" + seg.slice(1));
+    if (existsSync(enc1) && statSync(enc1).isDirectory()) directDir = enc1;
+    else if (existsSync(enc2) && statSync(enc2).isDirectory()) directDir = enc2;
+  } else {
+    const candidate = join(dir, seg);
+    if (!isPrivateDir(seg) && existsSync(candidate) && statSync(candidate).isDirectory()) {
+      directDir = candidate;
+    }
+  }
+  if (directDir) {
     const result = resolveRoute(directDir, segments, idx + 1, params, [...chain, directDir]);
     if (result) return result;
   }
   if (existsSync(dir) && statSync(dir).isDirectory()) {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (e.name.startsWith("[") && e.name.endsWith("]")) {
-        const paramName = e.name.slice(1, -1);
-        if (paramName.startsWith("...")) continue;
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      if (e.name.startsWith("(.)") || e.name.startsWith("(..)") || e.name.startsWith("(...)")) continue;
+      const named = e.name.match(NAMED_PARAM);
+      if (named && !named[1].startsWith("...") && !named[1].startsWith("[")) {
         const paramDir = join(dir, e.name);
-        const newParams = { ...params, [paramName]: seg };
+        const newParams = { ...params, [named[1]]: seg };
         const result = resolveRoute(paramDir, segments, idx + 1, newParams, [...chain, paramDir]);
         if (result) return result;
+      }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      if (e.name.startsWith("(.)") || e.name.startsWith("(..)") || e.name.startsWith("(...)")) continue;
+      const m = e.name.match(CATCH_PARAM);
+      if (m) {
+        const catchDir = join(dir, e.name);
+        const file = findFile(catchDir, "page");
+        if (file) {
+          return {
+            file,
+            params: { ...params, [m[1]]: segments.slice(idx) },
+            segments,
+            dirChain: [...chain, catchDir],
+          };
+        }
+      }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      if (e.name.startsWith("(.)") || e.name.startsWith("(..)") || e.name.startsWith("(...)")) continue;
+      const m = e.name.match(OPT_CATCH_PARAM);
+      if (m) {
+        const optDir = join(dir, e.name);
+        const file = findFile(optDir, "page");
+        if (file) {
+          return {
+            file,
+            params: { ...params, [m[1]]: segments.slice(idx) },
+            segments,
+            dirChain: [...chain, optDir],
+          };
+        }
       }
     }
   }
@@ -256,18 +433,41 @@ function resolveLeafDir(segments) {
 function walkLeafDir(dir, segments, idx, params) {
   if (idx === segments.length) return { dir, params };
   const seg = segments[idx];
-  const directDir = join(dir, seg);
-  if (existsSync(directDir) && statSync(directDir).isDirectory()) {
+  let directDir = null;
+  if (seg.startsWith("_")) {
+    const enc1 = join(dir, "%5F" + seg.slice(1));
+    const enc2 = join(dir, "%5f" + seg.slice(1));
+    if (existsSync(enc1) && statSync(enc1).isDirectory()) directDir = enc1;
+    else if (existsSync(enc2) && statSync(enc2).isDirectory()) directDir = enc2;
+  } else {
+    const candidate = join(dir, seg);
+    if (!isPrivateDir(seg) && existsSync(candidate) && statSync(candidate).isDirectory()) {
+      directDir = candidate;
+    }
+  }
+  if (directDir) {
     const r = walkLeafDir(directDir, segments, idx + 1, params);
     if (r) return r;
   }
   if (existsSync(dir) && statSync(dir).isDirectory()) {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory() && e.name.startsWith("[") && e.name.endsWith("]") && !e.name.includes("...")) {
-        const pn = e.name.slice(1, -1);
-        const r = walkLeafDir(join(dir, e.name), segments, idx + 1, { ...params, [pn]: seg });
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const named = e.name.match(NAMED_PARAM);
+      if (named && !named[1].startsWith("...") && !named[1].startsWith("[")) {
+        const r = walkLeafDir(join(dir, e.name), segments, idx + 1, { ...params, [named[1]]: seg });
         if (r) return r;
       }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const m = e.name.match(CATCH_PARAM);
+      if (m) return { dir: join(dir, e.name), params: { ...params, [m[1]]: segments.slice(idx) } };
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const m = e.name.match(OPT_CATCH_PARAM);
+      if (m) return { dir: join(dir, e.name), params: { ...params, [m[1]]: segments.slice(idx) } };
     }
   }
   return null;
@@ -295,33 +495,77 @@ function resolveApi(dir, segments, idx, params) {
   if (idx === segments.length) {
     const file = findFile(dir, "route");
     if (file) return { file, params };
+    if (existsSync(dir) && statSync(dir).isDirectory()) {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+        const m = e.name.match(OPT_CATCH_PARAM);
+        if (m) {
+          const optDir = join(dir, e.name);
+          const optFile = findFile(optDir, "route");
+          if (optFile) return { file: optFile, params: { ...params, [m[1]]: undefined } };
+        }
+      }
+    }
     return null;
   }
   const seg = segments[idx];
-  const directDir = join(dir, seg);
-  if (existsSync(directDir) && statSync(directDir).isDirectory()) {
+  let directDir = null;
+  if (seg.startsWith("_")) {
+    const enc1 = join(dir, "%5F" + seg.slice(1));
+    const enc2 = join(dir, "%5f" + seg.slice(1));
+    if (existsSync(enc1) && statSync(enc1).isDirectory()) directDir = enc1;
+    else if (existsSync(enc2) && statSync(enc2).isDirectory()) directDir = enc2;
+  } else {
+    const candidate = join(dir, seg);
+    if (!isPrivateDir(seg) && existsSync(candidate) && statSync(candidate).isDirectory()) {
+      directDir = candidate;
+    }
+  }
+  if (directDir) {
     const result = resolveApi(directDir, segments, idx + 1, params);
     if (result) return result;
   }
   if (existsSync(dir) && statSync(dir).isDirectory()) {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (e.name.startsWith("[") && e.name.endsWith("]")) {
-        const paramName = e.name.slice(1, -1);
-        if (paramName.startsWith("...")) continue;
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const named = e.name.match(NAMED_PARAM);
+      if (named && !named[1].startsWith("...") && !named[1].startsWith("[")) {
         const paramDir = join(dir, e.name);
-        const newParams = { ...params, [paramName]: seg };
+        const newParams = { ...params, [named[1]]: seg };
         const result = resolveApi(paramDir, segments, idx + 1, newParams);
         if (result) return result;
+      }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const m = e.name.match(CATCH_PARAM);
+      if (m) {
+        const file = findFile(join(dir, e.name), "route");
+        if (file) return { file, params: { ...params, [m[1]]: segments.slice(idx) } };
+      }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || isPrivateDir(e.name) || e.name.startsWith(".") || e.name.startsWith("@")) continue;
+      const m = e.name.match(OPT_CATCH_PARAM);
+      if (m) {
+        const file = findFile(join(dir, e.name), "route");
+        if (file) return { file, params: { ...params, [m[1]]: segments.slice(idx) } };
       }
     }
   }
   return null;
 }
 
-function findLayoutsFor(segments) {
+function findLayoutsFor(segments, dirChain) {
   const layouts = [];
+  if (dirChain && dirChain.length > 0) {
+    for (const dir of dirChain) {
+      const file = findFile(dir, "layout");
+      if (file && !layouts.some((l) => l.file === file)) layouts.push({ file, dir });
+    }
+    return layouts;
+  }
   for (let i = 0; i <= segments.length; i++) {
     const dir = i === 0 ? APP_DIR : join(APP_DIR, ...segments.slice(0, i));
     const file = findFile(dir, "layout");
@@ -588,11 +832,12 @@ function makeUseCachePlugin(temps) {
 }
 
 // Bun plugin: wrap client components imported by *server* modules as islands.
-function makeClientIslandPlugin(temps) {
+function makeClientIslandPlugin(temps, entryFile) {
   return {
     name: "sr-client-islands",
     setup(build) {
       build.onResolve({ filter: /.*/ }, (args) => {
+        if (!args.importer || args.kind === "entry-point") return undefined;
         const p = args.path;
         if (!isLocalBuildSpecifier(p)) return undefined;
         // Never wrap our own temp raw copies, and don't wrap when the importer is
@@ -601,7 +846,7 @@ function makeClientIslandPlugin(temps) {
         if (/\.__sr_raw_/.test(p)) return { path: p, namespace: "file" };
         if (args.importer && hasUseDirective(args.importer, "client")) return undefined;
         const abs = resolveIslandSpecifier(p, args.importer);
-        if (!abs || !hasUseDirective(abs, "client")) return undefined;
+        if (!abs || abs === entryFile || !hasUseDirective(abs, "client")) return undefined;
         return { path: abs, namespace: "sr-island" };
       });
       build.onLoad({ filter: /.*/, namespace: "sr-island" }, (args) => ({
@@ -609,6 +854,75 @@ function makeClientIslandPlugin(temps) {
         loader: "js",
         resolveDir: dirname(args.path),
       }));
+    },
+  };
+}
+
+function isUserActionFile(filePath) {
+  const rel = relative(cwd, filePath);
+  if (!rel || rel.startsWith("..") || rel.includes("node_modules") || rel.startsWith(`packages${sep}`)) {
+    return false;
+  }
+  return hasServerDirective(filePath) || /(?:^|[\\/])actions?\.(ts|js|mjs|tsx)$/.test(filePath);
+}
+
+function makeServerActionClientPlugin() {
+  return {
+    name: "sr-server-action-client",
+    setup(build) {
+      build.onLoad({ filter: /\.(ts|js|mjs|tsx|jsx)$/ }, (args) => {
+        try {
+          if (!isUserActionFile(args.path)) return undefined;
+          const src = readFileSync(args.path, "utf8");
+          if (/<[a-zA-Z_][\w.-]*(\s|>|\/)|React\.createElement\s*\(|_jsx(?:s|DEV)?\s*\(/.test(src)) return undefined;
+          const rel = relative(cwd, args.path);
+          const exports = [];
+          for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([a-zA-Z0-9_$]+)/g)) {
+            exports.push(m[1]);
+          }
+          for (const m of src.matchAll(/export\s+(?:const|let|var)\s+([a-zA-Z0-9_$]+)/g)) {
+            exports.push(m[1]);
+          }
+          let code = `import { createServerAction } from "swift-rust/action";\n`;
+          for (const exp of exports) {
+            code += `export const ${exp} = createServerAction(${JSON.stringify(`${rel}#${exp}`)});\n`;
+          }
+          return { contents: code, loader: "js" };
+        } catch {
+          return undefined;
+        }
+      });
+    },
+  };
+}
+
+function makeServerActionServerPlugin() {
+  return {
+    name: "sr-server-action-server",
+    setup(build) {
+      build.onLoad({ filter: /\.(ts|js|mjs|tsx|jsx)$/ }, (args) => {
+        try {
+          if (!isUserActionFile(args.path)) return undefined;
+          const src = readFileSync(args.path, "utf8");
+          if (/<[a-zA-Z_][\w.-]*(\s|>|\/)|React\.createElement\s*\(|_jsx(?:s|DEV)?\s*\(/.test(src)) return undefined;
+          const rel = relative(cwd, args.path);
+          const exports = [];
+          for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([a-zA-Z0-9_$]+)/g)) {
+            exports.push(m[1]);
+          }
+          for (const m of src.matchAll(/export\s+(?:const|let|var)\s+([a-zA-Z0-9_$]+)/g)) {
+            exports.push(m[1]);
+          }
+          let code = src + "\n";
+          for (const exp of exports) {
+            code += `try { if (typeof ${exp} === "function") { ${exp}.$$actionId = ${JSON.stringify(`${rel}#${exp}`)}; } } catch (e) {}\n`;
+          }
+          const ext = extname(args.path).slice(1);
+          return { contents: code, loader: ext === "ts" || ext === "tsx" ? ext : "js" };
+        } catch {
+          return undefined;
+        }
+      });
     },
   };
 }
@@ -672,13 +986,19 @@ for (var i = 0; i < nodes.length; i++) {
 `;
   writeFileSync(entryPath, entry);
   try {
-    const result = await Bun.build({
-      entrypoints: [entryPath],
-      target: "browser",
-      minify: true,
-      define: { "process.env.NODE_ENV": '"production"' },
-    });
-    if (!result.success) throw new Error(result.logs.map((l) => l.message).join("\n"));
+    let result;
+    try {
+      result = await Bun.build({
+        entrypoints: [entryPath],
+        target: "browser",
+        minify: true,
+        plugins: [makeServerActionClientPlugin()],
+        define: { "process.env.NODE_ENV": '"production"' },
+      });
+    } catch (buildErr) {
+      throw normalizeBuildError(buildErr, [], cwd);
+    }
+    if (!result.success) throw normalizeBuildError(null, result.logs, cwd);
     const code = await result.outputs[0].text();
     componentIslandCache.set(srcFile, { gen: buildGeneration, code });
     return code;
@@ -715,16 +1035,25 @@ async function buildSsrModule(filePath, gen) {
   const temps = [];
   let result;
   try {
-    result = await Bun.build({
-      entrypoints: [filePath],
-      target: "bun",
-      plugins: [makeUseCachePlugin(temps), makeClientIslandPlugin(temps), externalizeDepsPlugin],
-    });
+    try {
+      result = await Bun.build({
+        entrypoints: [filePath],
+        target: "bun",
+        plugins: [
+          makeUseCachePlugin(temps),
+          makeClientIslandPlugin(temps, filePath),
+          makeServerActionServerPlugin(),
+          externalizeDepsPlugin,
+        ],
+      });
+    } catch (buildErr) {
+      throw normalizeBuildError(buildErr, [], cwd);
+    }
   } finally {
     for (const t of temps) { try { unlinkSync(t); } catch {} }
   }
   if (!result.success) {
-    throw new Error(result.logs.map((l) => l.message).join("\n"));
+    throw normalizeBuildError(null, result.logs, cwd);
   }
   const output = result.outputs[0];
   if (!output) {
@@ -738,6 +1067,14 @@ async function buildSsrModule(filePath, gen) {
   writeFileSync(tmp, code);
   try {
     const mod = await import(pathToFileURL(tmp).href);
+    if (isUserActionFile(filePath)) {
+      const rel = relative(cwd, filePath);
+      for (const [k, v] of Object.entries(mod)) {
+        if (typeof v === "function") {
+          v.$$actionId = `${rel}#${k}`;
+        }
+      }
+    }
     ssrBundleCache.set(filePath, { gen, mod });
     return mod;
   } finally {
@@ -750,6 +1087,14 @@ async function loadModule(filePath, { bust = false } = {}) {
   const url = bust ? `${baseUrl}?t=${Date.now()}-${Math.random().toString(36).slice(2)}` : baseUrl;
   try {
     const mod = await import(url);
+    if (isUserActionFile(filePath)) {
+      const rel = relative(cwd, filePath);
+      for (const [k, v] of Object.entries(mod)) {
+        if (typeof v === "function") {
+          v.$$actionId = `${rel}#${k}`;
+        }
+      }
+    }
     moduleCache.set(url, { mod, file: filePath, loadedAt: Date.now() });
     return mod;
   } catch (err) {
@@ -758,15 +1103,40 @@ async function loadModule(filePath, { bust = false } = {}) {
   }
 }
 
-async function compileRoute(urlPath) {
+async function compileRoute(urlPath, req) {
   const start = performance.now();
   const segments = urlToRouteSegments(urlPath);
-  const route = resolvePageRoute(segments);
+  const isSoftNav = Boolean(req && (req.headers?.get?.("x-swift-rust-nav") === "1" || req.headers?.get?.("x-swift-rust-from")));
+  let route = null;
+  let activeIntercept = null;
+  if (isSoftNav) {
+    const fromHeader = req.headers?.get?.("x-swift-rust-from") || (req.headers?.get?.("referer") ? new URL(req.headers.get("referer")).pathname : null);
+    const fromSegments = fromHeader ? urlToRouteSegments(fromHeader) : null;
+    const allIntercepts = findInterceptingRoutes(APP_DIR);
+    for (const intercept of allIntercepts) {
+      const match = matchPatternSegments(intercept.patternSegments, segments);
+      if (match.matched) {
+        if (intercept.slotName) {
+          activeIntercept = { ...intercept, params: match.params };
+          const bgSegments = fromSegments || findRouteSegmentsForDir(intercept.ownerDir);
+          route = resolvePageRoute(bgSegments) || resolvePageRoute([]);
+          if (route) route.params = { ...route.params, ...match.params };
+          break;
+        } else {
+          route = { file: intercept.pageFile, params: match.params, segments, dirChain: intercept.dirChain };
+          break;
+        }
+      }
+    }
+  }
+  if (!route) {
+    route = resolvePageRoute(segments);
+  }
   if (!route) {
     compileTimings.set(urlPath, performance.now() - start);
     return { ok: false, reason: "not_found", pageFile: null, layoutFile: null, params: {}, segments };
   }
-  const layouts = findLayoutsFor(segments);
+  const layouts = findLayoutsFor(segments, route.dirChain);
   const notFoundFile = findNotFound(segments);
   const errorFile = findErrorBoundary(segments);
   const loadingFile = findLoading(segments);
@@ -781,6 +1151,7 @@ async function compileRoute(urlPath) {
     // module instances on every request — they leaked (ESM registry entries
     // are permanent) and, under Bun, didn't even pick up child-module edits.
     await loadModuleFresh(route.file);
+    if (activeIntercept) await loadModuleFresh(activeIntercept.pageFile);
     for (const layout of layouts) await loadModuleFresh(layout.file);
     if (notFoundFile) await loadModuleFresh(notFoundFile);
     if (errorFile) await loadModuleFresh(errorFile);
@@ -1237,7 +1608,14 @@ function findServerComponentInClientGraph(entryFile, seen = new Set()) {
       } catch {}
     }
     if (!target) continue;
-    if (hasServerDirective(target)) return target;
+    if (hasServerDirective(target)) {
+      try {
+        const targetSrc = readFileSync(target, "utf8");
+        if (/<[a-zA-Z_][\w.-]*(\s|>|\/)|React\.createElement\s*\(/.test(targetSrc)) {
+          return target;
+        }
+      } catch {}
+    }
     const nested = findServerComponentInClientGraph(target, seen);
     if (nested) return nested;
   }
@@ -1334,14 +1712,20 @@ if (el) {
 `;
   writeFileSync(entryPath, entry);
   try {
-    const result = await Bun.build({
-      entrypoints: [entryPath],
-      target: "browser",
-      minify: true,
-      define: { "process.env.NODE_ENV": '"production"' },
-    });
+    let result;
+    try {
+      result = await Bun.build({
+        entrypoints: [entryPath],
+        target: "browser",
+        minify: true,
+        plugins: [makeServerActionClientPlugin()],
+        define: { "process.env.NODE_ENV": '"production"' },
+      });
+    } catch (buildErr) {
+      throw normalizeBuildError(buildErr, [], cwd);
+    }
     if (!result.success) {
-      throw new Error(result.logs.map((l) => l.message).join("\n"));
+      throw normalizeBuildError(null, result.logs, cwd);
     }
     const code = await result.outputs[0].text();
     islandBundleCache.set(pageFile, { gen: buildGeneration, code });
@@ -1803,40 +2187,57 @@ function findDynamicChild(dir) {
 // Resolve one @slot dir against the URL segments below its layout. Returns a
 // React element (the slot's matched page/fragment, its default.tsx, wrapped in
 // any slot layouts + a fallback.tsx Suspense boundary) or null.
-async function resolveSlotElement(slotDir, segs) {
+async function resolveSlotElement(slotDir, segs, req, intercepted) {
   const React = await import("react");
-  let cur = slotDir;
-  const slotLayouts = [];
-  let matched = true;
-  for (let i = 0; i < segs.length; i++) {
-    const layoutFile = findFile(cur, "layout");
-    if (layoutFile) slotLayouts.push(layoutFile);
-    let next = join(cur, segs[i]);
-    if (!existsSync(next) || !statSync(next).isDirectory()) {
-      const dyn = findDynamicChild(cur);
-      if (dyn) next = dyn;
-      else {
-        matched = false;
-        break;
-      }
-    }
-    cur = next;
-  }
   let leafFile = null;
-  if (matched) {
-    const layoutFile = findFile(cur, "layout");
-    if (layoutFile && !slotLayouts.includes(layoutFile)) slotLayouts.push(layoutFile);
-    leafFile = findFile(cur, "page") || findFile(cur, "fragment");
-  }
-  if (!leafFile) {
-    // Unmatched slot → default.tsx (Next.js semantics), else nothing.
-    const def = findFile(slotDir, "default");
-    if (!def) return null;
-    leafFile = def;
-    slotLayouts.length = 0;
+  const slotLayouts = [];
+  let matchedParams = {};
+
+  if (intercepted) {
+    leafFile = intercepted.pageFile;
+    matchedParams = intercepted.params || {};
     const rootLayout = findFile(slotDir, "layout");
     if (rootLayout) slotLayouts.push(rootLayout);
+  } else {
+    let cur = slotDir;
+    let matched = true;
+    for (let i = 0; i < segs.length; i++) {
+      const layoutFile = findFile(cur, "layout");
+      if (layoutFile) slotLayouts.push(layoutFile);
+      let next = join(cur, segs[i]);
+      if (!existsSync(next) || !statSync(next).isDirectory()) {
+        const dyn = findDynamicChild(cur);
+        if (dyn) next = dyn;
+        else {
+          matched = false;
+          break;
+        }
+      }
+      cur = next;
+    }
+    if (matched) {
+      const layoutFile = findFile(cur, "layout");
+      if (layoutFile && !slotLayouts.includes(layoutFile)) slotLayouts.push(layoutFile);
+      leafFile = findFile(cur, "page") || findFile(cur, "fragment");
+    }
+    if (!leafFile) {
+      // Unmatched slot → closest default.tsx (Next.js semantics), else nothing.
+      let def = findFile(cur, "default") || findFile(slotDir, "default");
+      if (!def) {
+        let p = cur;
+        while (p.length > slotDir.length && !def) {
+          p = dirname(p);
+          def = findFile(p, "default");
+        }
+      }
+      if (!def) return null;
+      leafFile = def;
+      slotLayouts.length = 0;
+      const rootLayout = findFile(slotDir, "layout");
+      if (rootLayout) slotLayouts.push(rootLayout);
+    }
   }
+
   let mod;
   try {
     mod = await loadModuleFresh(leafFile);
@@ -1845,7 +2246,7 @@ async function resolveSlotElement(slotDir, segs) {
   }
   const Comp = mod.default ?? mod.Page ?? mod.Fragment ?? mod.page ?? mod.fragment;
   if (!Comp) return null;
-  let el = React.createElement(Comp, {});
+  let el = React.createElement(Comp, { params: matchedParams });
   for (let i = slotLayouts.length - 1; i >= 0; i--) {
     try {
       const lm = await loadModuleFresh(slotLayouts[i]);
@@ -1865,7 +2266,7 @@ async function resolveSlotElement(slotDir, segs) {
 }
 
 // Collect all @slot dirs of a layout dir into named props for the layout.
-async function resolveParallelSlots(dir, segs) {
+async function resolveParallelSlots(dir, segs, req, activeIntercept) {
   const slots = {};
   let entries;
   try {
@@ -1875,8 +2276,15 @@ async function resolveParallelSlots(dir, segs) {
   }
   for (const e of entries) {
     if (e.isDirectory() && e.name.startsWith("@")) {
-      const el = await resolveSlotElement(join(dir, e.name), segs);
-      if (el) slots[e.name.slice(1)] = el;
+      const slotName = e.name.slice(1);
+      const isIntercepted = activeIntercept && activeIntercept.ownerDir === dir && activeIntercept.slotName === slotName;
+      const el = await resolveSlotElement(
+        join(dir, e.name),
+        segs,
+        req,
+        isIntercepted ? activeIntercept : null,
+      );
+      if (el) slots[slotName] = el;
     }
   }
   return slots;
@@ -1884,11 +2292,38 @@ async function resolveParallelSlots(dir, segs) {
 
 async function renderRoute(urlPath, req) {
   const segments = urlToRouteSegments(urlPath);
-  const route = resolvePageRoute(segments);
+  const isSoftNav = Boolean(req && (req.headers?.get?.("x-swift-rust-nav") === "1" || req.headers?.get?.("x-swift-rust-from")));
+  let activeIntercept = null;
+  let route = null;
+  if (isSoftNav) {
+    const fromHeader = req.headers?.get?.("x-swift-rust-from") || (req.headers?.get?.("referer") ? new URL(req.headers.get("referer")).pathname : null);
+    const fromSegments = fromHeader ? urlToRouteSegments(fromHeader) : null;
+    const allIntercepts = findInterceptingRoutes(APP_DIR);
+    for (const intercept of allIntercepts) {
+      const match = matchPatternSegments(intercept.patternSegments, segments);
+      if (match.matched) {
+        if (intercept.slotName) {
+          activeIntercept = { ...intercept, params: match.params };
+          const bgSegments = fromSegments || findRouteSegmentsForDir(intercept.ownerDir);
+          route = resolvePageRoute(bgSegments) || resolvePageRoute([]);
+          if (route) {
+            route.params = { ...route.params, ...match.params };
+          }
+          break;
+        } else {
+          route = { file: intercept.pageFile, params: match.params, segments, dirChain: intercept.dirChain };
+          break;
+        }
+      }
+    }
+  }
+  if (!route) {
+    route = resolvePageRoute(segments);
+  }
   if (!route) {
     return await renderNotFound(segments);
   }
-  const layouts = findLayoutsFor(segments);
+  const layouts = findLayoutsFor(segments, route.dirChain);
   const notFoundFile = findNotFound(segments);
   const errorFile = findErrorBoundary(segments);
   const loadingFile = findLoading(segments);
@@ -1940,9 +2375,12 @@ async function renderRoute(urlPath, req) {
         }
       }
     }
+    let pageMod = null;
     if (!Page) {
-      const pageMod = await loadModuleFresh(route.file);
+      pageMod = await loadModuleFresh(route.file);
       Page = pageMod.default ?? pageMod.Page ?? pageMod.page;
+    } else {
+      try { pageMod = await loadModuleFresh(route.file); } catch {}
     }
     if (!Page) {
       return { status: 500, html: null, error: new Error(`page ${route.file} has no default export`) };
@@ -1985,7 +2423,7 @@ async function renderRoute(urlPath, req) {
         const Layout = layoutMod.default ?? layoutMod.Layout ?? layoutMod.layout;
         if (Layout) {
           // Parallel routes: @slot subdirs of this layout become named props.
-          const slotProps = await resolveParallelSlots(dir, segments.slice(i));
+          const slotProps = await resolveParallelSlots(dir, segments.slice(i), req, activeIntercept);
           tree = React.createElement(Layout, slotProps, tree);
         }
       }
@@ -2008,7 +2446,13 @@ async function renderRoute(urlPath, req) {
     const html = await renderToStringCompat(tree);
     if (runtime?.__setRouteContext) runtime.__setRouteContext(null);
     const metadata = await resolveMetadata(layouts.map((l) => l.file), route.file, route.params, segments);
-    return { status: 200, html, metadata, error: null, clientPage, pageFile: route.file, layoutFiles: layouts.map((l) => l.file), notFoundFile, errorFile, loadingFile, segments, setCookies: pipeline.setCookies, actionData: pipeline.actionData, config: pipeline.config, revalidatePlan: pipeline.revalidatePlan, seoHead: pipeline.seoHead, serverState: pipeline.serverState, fullDocument };
+    const isPpr = Boolean(
+      pageMod?.experimental_ppr ||
+      pageMod?.config?.ppr ||
+      pipeline.config?.ppr ||
+      pipeline.config?.experimental_ppr
+    );
+    return { status: 200, html, metadata, error: null, clientPage, pageFile: route.file, layoutFiles: layouts.map((l) => l.file), notFoundFile, errorFile, loadingFile, segments, setCookies: pipeline.setCookies, actionData: pipeline.actionData, config: pipeline.config, revalidatePlan: pipeline.revalidatePlan, seoHead: pipeline.seoHead, serverState: pipeline.serverState, fullDocument, ppr: isPpr };
   } catch (err) {
     const rt = await routerRuntime();
     if (rt?.__setRouteContext) rt.__setRouteContext(null);
@@ -2496,6 +2940,142 @@ async function checkAppDir() {
   }
 }
 
+async function handleServerAction(req) {
+  let actionId = req.headers?.get?.("x-action-id") || req.headers?.get?.("next-action");
+  const ctype = req.headers?.get?.("content-type") || "";
+  const isForm = ctype.includes("multipart/form-data") || ctype.includes("application/x-www-form-urlencoded");
+  const isJson = ctype.includes("application/json");
+  let args = [];
+  let formData = null;
+
+  if (isForm) {
+    try {
+      formData = await req.formData();
+      if (!actionId && formData.has("__sr_action_id")) {
+        actionId = String(formData.get("__sr_action_id"));
+      }
+    } catch {
+      return Response.json({ ok: false, error: "Failed to parse form data" }, { status: 400 });
+    }
+  } else if (isJson) {
+    try {
+      const body = await req.json();
+      if (Array.isArray(body)) {
+        args = body;
+      } else if (body && typeof body === "object") {
+        if (!actionId && body.actionId) actionId = String(body.actionId);
+        if (Array.isArray(body.args)) args = body.args;
+        else if (body.data !== undefined) args = [body.data];
+        else args = [body];
+      }
+    } catch {
+      return Response.json({ ok: false, error: "Failed to parse JSON body" }, { status: 400 });
+    }
+  } else {
+    const text = await req.text().catch(() => "");
+    if (text) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) args = parsed;
+        else if (parsed?.actionId) {
+          if (!actionId) actionId = String(parsed.actionId);
+          args = Array.isArray(parsed.args) ? parsed.args : [parsed];
+        } else {
+          args = [parsed];
+        }
+      } catch {
+        args = [text];
+      }
+    }
+  }
+
+  if (!actionId) {
+    return Response.json({ ok: false, error: "Missing action identifier" }, { status: 400 });
+  }
+
+  let filePart = "";
+  let exportName = "default";
+  if (actionId.includes("#")) {
+    [filePart, exportName] = actionId.split("#");
+  } else if (actionId.includes(":")) {
+    [filePart, exportName] = actionId.split(":");
+  } else {
+    exportName = actionId;
+  }
+
+  let targetFile = null;
+  const candidates = [
+    filePart,
+    join(cwd, filePart),
+    join(APP_DIR, filePart),
+    join(cwd, "src", filePart),
+    join(cwd, "src", "app", filePart),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    for (const ext of ["", ".ts", ".tsx", ".js", ".mjs"]) {
+      const p = c + ext;
+      try {
+        if (existsSync(p) && statSync(p).isFile()) {
+          targetFile = p;
+          break;
+        }
+      } catch {}
+    }
+    if (targetFile) break;
+  }
+
+  if (!targetFile) {
+    const defaultActions = [
+      join(APP_DIR, "actions.ts"),
+      join(APP_DIR, "actions.tsx"),
+      join(APP_DIR, "actions.js"),
+      join(cwd, "src", "actions.ts"),
+      join(cwd, "actions.ts"),
+    ];
+    for (const a of defaultActions) {
+      if (existsSync(a) && statSync(a).isFile()) {
+        targetFile = a;
+        break;
+      }
+    }
+  }
+
+  if (!targetFile) {
+    return Response.json({ ok: false, error: `Action module not found: ${filePart || actionId}` }, { status: 404 });
+  }
+
+  try {
+    const mod = await loadModuleFresh(targetFile);
+    const fn = mod[exportName] || (exportName === "default" ? (mod.default ?? mod.action) : null);
+    if (typeof fn !== "function") {
+      return Response.json({ ok: false, error: `Action function '${exportName}' not found in ${relative(cwd, targetFile)}` }, { status: 404 });
+    }
+
+    const result = formData ? await fn(formData) : await fn(...args);
+
+    if (result instanceof Response) return result;
+
+    const acceptsHtml = (req.headers?.get?.("accept") || "").includes("text/html");
+    if (acceptsHtml && !isJson) {
+      const referer = req.headers?.get?.("referer") || "/";
+      return new Response(null, { status: 303, headers: { Location: referer } });
+    }
+
+    return Response.json({ ok: true, data: result });
+  } catch (err) {
+    if (err?.digest && String(err.digest).startsWith("REDIRECT;")) {
+      const [, statusStr, ...rest] = String(err.digest).split(";");
+      const loc = rest.join(";");
+      if (isJson) {
+        return Response.json({ ok: true, redirect: loc });
+      }
+      return new Response(null, { status: parseInt(statusStr, 10) || 303, headers: { Location: loc } });
+    }
+    return Response.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
+  }
+}
+
 let serverHandle = null;
 
 async function handleRequest(req, res) {
@@ -2534,6 +3114,19 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (
+    pathname === "/_vercel/insights/script.js" ||
+    pathname === "/_vercel/speed-insights/script.js" ||
+    pathname.startsWith("/_vercel/")
+  ) {
+    res.writeHead(200, {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end("/* Vercel Analytics dev stub (active in production on Vercel) */\n");
+    return;
+  }
+
   if (pathname === "/_swift-rust/info") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ version: VERSION, appDir: relative(cwd, APP_DIR), port, uptime: Date.now() - bootTime }));
@@ -2543,6 +3136,25 @@ async function handleRequest(req, res) {
   if (pathname === "/_swift-rust/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", version: VERSION }));
+    return;
+  }
+
+  if (pathname === "/_swift-rust/action" || (req.method === "POST" && (req.headers["x-action-id"] || req.headers["next-action"]))) {
+    const proto = req.socket?.encrypted ? "https" : "http";
+    const fullUrl = `${proto}://${req.headers.host || "localhost"}${req.url}`;
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const bodyBuf = Buffer.concat(chunks);
+    const webReq = new Request(fullUrl, {
+      method: req.method,
+      headers: req.headers,
+      body: req.method !== "GET" && req.method !== "HEAD" && bodyBuf.length ? bodyBuf : undefined,
+      duplex: "half",
+    });
+    const webRes = await handleServerAction(webReq);
+    res.statusCode = webRes.status;
+    webRes.headers.forEach((v, k) => res.setHeader(k, v));
+    res.end(await webRes.text());
     return;
   }
 
@@ -2658,7 +3270,7 @@ async function handleRequest(req, res) {
   }
 
   const compileStart = performance.now();
-  const compileResult = await compileRoute(pathname);
+  const compileResult = await compileRoute(pathname, req);
   const compileMs = performance.now() - compileStart;
 
   if (compileResult.ok && !compileResult.cached) {
@@ -2719,6 +3331,66 @@ async function handleRequest(req, res) {
   res.end(await wrapInDocumentAsync({ head: "", body: renderResult.html || "" }));
 }
 
+function serializeRobots(data) {
+  if (typeof data === "string") return data;
+  if (!data || typeof data !== "object") return "";
+  const lines = [];
+  const rules = Array.isArray(data.rules) ? data.rules : data.rules ? [data.rules] : [];
+  for (const rule of rules) {
+    const agents = Array.isArray(rule.userAgent) ? rule.userAgent : [rule.userAgent || "*"];
+    for (const a of agents) lines.push(`User-agent: ${a}`);
+    const allows = Array.isArray(rule.allow) ? rule.allow : rule.allow ? [rule.allow] : [];
+    for (const al of allows) lines.push(`Allow: ${al}`);
+    const disallows = Array.isArray(rule.disallow) ? rule.disallow : rule.disallow ? [rule.disallow] : [];
+    for (const d of disallows) lines.push(`Disallow: ${d}`);
+    if (rule.crawlDelay) lines.push(`Crawl-delay: ${rule.crawlDelay}`);
+  }
+  if (data.sitemap) {
+    const sitemaps = Array.isArray(data.sitemap) ? data.sitemap : [data.sitemap];
+    for (const s of sitemaps) lines.push(`Sitemap: ${s}`);
+  }
+  if (data.host) lines.push(`Host: ${data.host}`);
+  return lines.join("\n") + "\n";
+}
+
+function escapeXml(unsafe) {
+  return String(unsafe).replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case "&": return "&amp;";
+      case "'": return "&apos;";
+      case '"': return "&quot;";
+    }
+  });
+}
+
+function serializeSitemap(items) {
+  if (typeof items === "string") return items;
+  if (!Array.isArray(items)) return "";
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+  for (const item of items) {
+    if (!item || !item.url) continue;
+    xml += "  <url>\n";
+    xml += `    <loc>${escapeXml(item.url)}</loc>\n`;
+    if (item.lastModified) {
+      const d = item.lastModified instanceof Date ? item.lastModified.toISOString() : String(item.lastModified);
+      xml += `    <lastmod>${escapeXml(d)}</lastmod>\n`;
+    }
+    if (item.changeFrequency) {
+      xml += `    <changefreq>${escapeXml(item.changeFrequency)}</changefreq>\n`;
+    }
+    if (item.priority !== undefined && item.priority !== null) {
+      xml += `    <priority>${Number(item.priority).toFixed(1)}</priority>\n`;
+    }
+    xml += "  </url>\n";
+  }
+  xml += "</urlset>\n";
+  return xml;
+}
+
+let instrumentationMod = null;
+
 async function handleFetch(req) {
   const reqStart = performance.now();
   const url = new URL(req.url);
@@ -2763,12 +3435,72 @@ async function handleFetch(req) {
     return new Response(null, { status: 204 });
   }
 
+  if (
+    pathname === "/_vercel/insights/script.js" ||
+    pathname === "/_vercel/speed-insights/script.js" ||
+    pathname.startsWith("/_vercel/")
+  ) {
+    return new Response("/* Vercel Analytics dev stub (active in production on Vercel) */\n", {
+      status: 200,
+      headers: {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
   if (pathname === "/_swift-rust/info") {
     return Response.json({ version: VERSION, appDir: relative(cwd, APP_DIR), port, uptime: Date.now() - bootTime });
   }
 
   if (pathname === "/_swift-rust/health") {
     return Response.json({ status: "ok", version: VERSION });
+  }
+
+  if (pathname === "/_swift-rust/action" || (req.method === "POST" && (req.headers.get("x-action-id") || req.headers.get("next-action")))) {
+    return await handleServerAction(req);
+  }
+
+  if (pathname === "/robots.txt") {
+    const robotsFile = findFile(APP_DIR, "robots") || (existsSync(join(APP_DIR, "robots.txt")) ? join(APP_DIR, "robots.txt") : null);
+    if (robotsFile) {
+      if (robotsFile.endsWith(".txt")) {
+        return new Response(readFileSync(robotsFile, "utf8"), {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      try {
+        const mod = await loadModuleFresh(robotsFile);
+        const fn = mod.default ?? mod.robots;
+        const data = typeof fn === "function" ? await fn() : (mod.default ?? mod.robots ?? mod);
+        return new Response(serializeRobots(data), {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      } catch (err) {
+        return new Response(String(err?.stack || err), { status: 500 });
+      }
+    }
+  }
+
+  if (pathname === "/sitemap.xml") {
+    const sitemapFile = findFile(APP_DIR, "sitemap") || (existsSync(join(APP_DIR, "sitemap.xml")) ? join(APP_DIR, "sitemap.xml") : null);
+    if (sitemapFile) {
+      if (sitemapFile.endsWith(".xml")) {
+        return new Response(readFileSync(sitemapFile, "utf8"), {
+          headers: { "Content-Type": "application/xml; charset=utf-8" },
+        });
+      }
+      try {
+        const mod = await loadModuleFresh(sitemapFile);
+        const fn = mod.default ?? mod.sitemap;
+        const data = typeof fn === "function" ? await fn() : (mod.default ?? mod.sitemap ?? mod);
+        return new Response(serializeSitemap(data), {
+          headers: { "Content-Type": "application/xml; charset=utf-8" },
+        });
+      } catch (err) {
+        return new Response(String(err?.stack || err), { status: 500 });
+      }
+    }
   }
 
   if (pathname === "/_swift-rust/hmr-client.js") {
@@ -2839,8 +3571,14 @@ async function handleFetch(req) {
           headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" },
         });
       } catch (e) {
-        logError(e, `island bundle failed for ${p}`);
-        return new Response(`/* island build error: ${String(e?.message || e).replace(/\*\//g, "* /")} */`, {
+        const relP = relative(cwd, p);
+        logError(e, `island bundle failed for ${relP}`);
+        const info = formatTerminalError(e, `island bundle failed for ${relP}`, cwd);
+        broadcastHmr({
+          type: "error",
+          message: `[${info.code}] ${info.title} (${relP}): ${info.message}\n💡 Solution: ${info.solution}`,
+        });
+        return new Response(`/* island build error: ${String(info.message).replace(/\*\//g, "* /")} */`, {
           status: 500,
           headers: { "Content-Type": "application/javascript; charset=utf-8" },
         });
@@ -2859,8 +3597,14 @@ async function handleFetch(req) {
           headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" },
         });
       } catch (e) {
-        logError(e, `component island bundle failed for ${p}`);
-        return new Response(`/* island build error: ${String(e?.message || e).replace(/\*\//g, "* /")} */`, {
+        const relP = relative(cwd, p);
+        logError(e, `component island bundle failed for ${relP}`);
+        const info = formatTerminalError(e, `component island bundle failed for ${relP}`, cwd);
+        broadcastHmr({
+          type: "error",
+          message: `[${info.code}] ${info.title} (${relP}): ${info.message}\n💡 Solution: ${info.solution}`,
+        });
+        return new Response(`/* island build error: ${String(info.message).replace(/\*\//g, "* /")} */`, {
           status: 500,
           headers: { "Content-Type": "application/javascript; charset=utf-8" },
         });
@@ -2995,7 +3739,7 @@ async function handleFetch(req) {
   }
 
   const compileStart = performance.now();
-  const compileResult = await compileRoute(pathname);
+  const compileResult = await compileRoute(pathname, req);
   const compileMs = performance.now() - compileStart;
 
   if (compileResult.ok && !compileResult.cached) {
@@ -3152,7 +3896,19 @@ async function handleFetch(req) {
   if (!cc && renderResult.config?.static) cc = "public, max-age=0, s-maxage=31536000, stale-while-revalidate";
   if (cc) headers.set("Cache-Control", cc);
   const tags = renderResult.revalidatePlan?.tags || renderResult.revalidatePlan?.invalidate;
-  if (Array.isArray(tags) && tags.length) headers.set("x-vercel-cache-tags", tags.join(","));
+  if (renderResult.ppr) {
+    headers.set("x-swift-rust-render", "ppr");
+    headers.set("x-swift-rust-ppr", "1");
+    if (!headers.has("Cache-Control")) headers.set("Cache-Control", "no-cache, no-transform");
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(doc));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200, headers });
+  }
   return new Response(doc, { status: 200, headers });
 }
 
@@ -3209,6 +3965,11 @@ async function handleApiRoute(req, segments, method, reqStart) {
       headers: { "Content-Type": "text/plain" },
     });
   } catch (err) {
+    if (instrumentationMod && typeof instrumentationMod.onRequestError === "function") {
+      try {
+        await instrumentationMod.onRequestError(err, req, { routerKind: "App Router", routePath: pathname });
+      } catch {}
+    }
     logError(err, `Failed to handle ${method} /${segments.join("/")}`);
     const total = performance.now() - reqStart;
     logRequest({ method, url: "/" + segments.join("/"), status: 500, duration: total, compileMs: 0 });
@@ -3246,6 +4007,27 @@ try {
   logLine([` ${paint("dim", "› watcher ready")}`]);
 } catch (err) {
   logLine([` ${paint("red", "watcher error:")} ${err.message}`]);
+}
+
+const instrumentationCandidates = [
+  join(cwd, "src", "instrumentation.ts"),
+  join(cwd, "src", "instrumentation.js"),
+  join(cwd, "instrumentation.ts"),
+  join(cwd, "instrumentation.js"),
+];
+for (const p of instrumentationCandidates) {
+  if (existsSync(p)) {
+    try {
+      instrumentationMod = await loadModuleFresh(p);
+      if (typeof instrumentationMod.register === "function") {
+        await instrumentationMod.register();
+        logLine([` ${paint("dim", "› instrumentation registered")}`]);
+      }
+    } catch (e) {
+      logError(e, "instrumentation error");
+    }
+    break;
+  }
 }
 
 logLine([` ${paint("dim", `› listen on ${hostname}:${port}…`)}`]);

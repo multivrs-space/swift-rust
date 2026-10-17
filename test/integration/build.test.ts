@@ -39,6 +39,28 @@ describe("static rendering", () => {
     const cfg = readJson(join(OUT, "config.json"));
     expect(cfg.images?.sizes).toContain(3840);
   });
+  test("robots.txt is emitted into static output", () => {
+    const txt = readStatic("robots.txt");
+    expect(txt).toContain("User-agent: *");
+    expect(txt).toContain("Allow: /");
+    expect(txt).toContain("Disallow: /secret/");
+  });
+  test("sitemap.xml is emitted into static output", () => {
+    const xml = readStatic("sitemap.xml");
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("<loc>https://example.com</loc>");
+  });
+  test("static page wraps template.tsx", () => {
+    const html = readStatic("templated/index.html");
+    expect(html).toContain('data-templated="true"');
+    expect(html).toContain("Templated Content");
+  });
+  test("<Script> component renders into static output", () => {
+    const html = readStatic("scriptdemo/index.html");
+    expect(html).toContain('id="analytics"');
+    expect(html).toContain('data-strategy="afterInteractive"');
+    expect(html).toContain("analytics loaded");
+  });
 });
 
 describe("fonts", () => {
@@ -72,17 +94,36 @@ describe("client runtime", () => {
 });
 
 describe("function emission", () => {
-  test("a 'use node' route emits a Node function", () => {
+  test("a 'use node' route emits a Node function with package.json", () => {
     const cfg = readJson(join(FN, "dash.func", ".vc-config.json"));
     expect(cfg.runtime).toBe("nodejs22.x");
     expect(cfg.launcherType).toBe("Nodejs");
     expect(existsSync(join(FN, "dash.func", "index.js"))).toBe(true);
+    const pkg = readJson(join(FN, "dash.func", "package.json"));
+    expect(pkg.type).toBe("module");
   });
-  test("a [param] route emits one function + a config.json route", () => {
+  test("a [param] route emits one function + a config.json route with captured param query", () => {
     expect(existsSync(join(FN, "item", "[id].func", "index.js"))).toBe(true);
     const cfg = readJson(join(OUT, "config.json"));
-    expect(cfg.routes.some((r: { dest?: string }) => r.dest === "/item/[id]")).toBe(true);
+    expect(cfg.routes.some((r: { dest?: string }) => r.dest === "/item/[id]?__sr_p0=$1")).toBe(
+      true,
+    );
     expect(cfg.routes.some((r: { src?: string }) => r.src === "^/item/([^/]+)/?$")).toBe(true);
+  });
+  test("optional catch-all [[...slug]] emits a function with optional segment regex and dest query", () => {
+    expect(existsSync(join(FN, "docs", "[[...slug]].func", "index.js"))).toBe(true);
+    const cfg = readJson(join(OUT, "config.json"));
+    expect(
+      cfg.routes.some((r: { dest?: string }) => r.dest === "/docs/[[...slug]]?__sr_p0=$1"),
+    ).toBe(true);
+    expect(cfg.routes.some((r: { src?: string }) => r.src === "^/docs(?:/(.*))?/?$")).toBe(true);
+  });
+  test("private folders starting with _ are not emitted as routes or functions", () => {
+    expect(existsSync(join(STATIC, "_secret"))).toBe(false);
+    expect(existsSync(join(FN, "_secret.func"))).toBe(false);
+  });
+  test("escaped %5F folders are emitted as _folder static assets", () => {
+    expect(existsSync(join(STATIC, "_public", "index.html"))).toBe(true);
   });
   test("@slot dirs are not emitted as routes", () => {
     expect(existsSync(join(STATIC, "shop", "@panel"))).toBe(false);
@@ -113,9 +154,48 @@ describe("function request pipeline", () => {
     expect(r.html).toContain("__SR_STATE__"); // state.ts
     expect(r.html).toContain("<title>Dashboard</title>"); // seo.tsx overrides
   });
-  test("[param] route extracts params from the URL", async () => {
+  test("[param] route extracts params from the URL and inlines .env.production + client islands", async () => {
     const r = await invoke("item/[id].func", "/item/widget-42");
     expect(r.html).toContain("widget-42");
+    expect(r.html).toContain('data-api="https://prod.example.com"');
+    expect(r.html).toContain("data-sr-island");
+    expect(r.html).toMatch(
+      /<script type="module" src="\/_swift-rust\/island\/[a-z0-9]+\.js"><\/script>/,
+    );
+  });
+  test("[param] route recovers param when Vercel rewrites pathname to /item/[id]?__sr_p0=...", async () => {
+    const r = await invoke("item/[id].func", "/item/[id]?__sr_p0=rewritten-99");
+    expect(r.html).toContain("rewritten-99");
+  });
+  test("Nodejs (req, res) launcher bridge works on emitted function", async () => {
+    const mod = await import(join(FN, "item", "[id].func", "index.js"));
+    expect(typeof mod.GET).toBe("function");
+    let statusCode = 0;
+    const headers: Record<string, string | string[]> = {};
+    let bodyBytes = new Uint8Array();
+    const req = {
+      method: "GET",
+      url: "/item/[id]?__sr_p0=node-bridge-7",
+      headers: { host: "t.dev", "x-forwarded-proto": "https" },
+    };
+    const res = {
+      set statusCode(c: number) {
+        statusCode = c;
+      },
+      get statusCode() {
+        return statusCode;
+      },
+      setHeader(k: string, v: string | string[]) {
+        headers[k.toLowerCase()] = v;
+      },
+      end(chunk?: any) {
+        if (chunk) bodyBytes = chunk;
+      },
+    };
+    await mod.default(req, res);
+    expect(statusCode).toBe(200);
+    const html = new TextDecoder().decode(bodyBytes);
+    expect(html).toContain("node-bridge-7");
   });
   test("'use client' route is wrapped for hydration with its island bundle", async () => {
     const r = await invoke("widget.func", "/widget");
@@ -125,5 +205,21 @@ describe("function request pipeline", () => {
   test("parallel @slot is composed into the layout", async () => {
     const r = await invoke("shop.func", "/shop");
     expect(r.html).toContain("PANEL");
+  });
+  test("optional catch-all function handles base route and nested segments across Vercel rewrites", async () => {
+    const base = await invoke("docs/[[...slug]].func", "/docs");
+    expect(base.status).toBe(200);
+    expect(base.html).toMatch(/docs-slug:(?:<!-- -->)?ROOT_DOCS/);
+
+    const nested = await invoke("docs/[[...slug]].func", "/docs/getting-started");
+    expect(nested.status).toBe(200);
+    expect(nested.html).toMatch(/docs-slug:(?:<!-- -->)?getting-started/);
+
+    const rewritten = await invoke(
+      "docs/[[...slug]].func",
+      "/docs/[[...slug]]?__sr_p0=deep/nested/guide",
+    );
+    expect(rewritten.status).toBe(200);
+    expect(rewritten.html).toMatch(/docs-slug:(?:<!-- -->)?deep\/nested\/guide/);
   });
 });

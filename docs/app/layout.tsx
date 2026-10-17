@@ -1,10 +1,10 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 import { Geist, GeistMono } from "swift-rust/font/google";
+import { Analytics } from "./components/analytics";
 import { CodeCopyButtons } from "./components/code-copy-buttons";
 import { Header } from "./components/header";
 import { Sidebar } from "./components/sidebar";
-import { Analytics } from "./components/analytics";
 
 const geist = Geist({ subsets: ["latin"], display: "swap", variable: true });
 const geistMono = GeistMono({ subsets: ["latin"], display: "swap", variable: true });

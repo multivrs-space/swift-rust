@@ -8,7 +8,7 @@
     "dev": "bun ../../packages/swift-rust/bin/dev-server.mjs --port 3211",
     "build": "bun ../../packages/swift-rust/bin/build.mjs",
     "start": "bun ../../packages/swift-rust/bin/dev-server.mjs --port 3211",
-    "lint": "biome check .",
+    "lint": "biome check --no-errors-on-unmatched .",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

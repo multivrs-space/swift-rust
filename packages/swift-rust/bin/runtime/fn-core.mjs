@@ -25,16 +25,123 @@ function parseCookies(request) {
   return { get: (k) => map.get(k), has: (k) => map.has(k) };
 }
 
-function matchParams(pattern, pathname) {
-  const segs = pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+function isParamPlaceholder(seg, token) {
+  if (!seg) return true;
+  let decoded = seg;
+  try {
+    decoded = decodeURIComponent(seg);
+  } catch {}
+  return decoded === token || /^\[.+\]$/.test(decoded);
+}
+
+function matchParams(pattern, pathname, url, headers) {
+  let effectivePath = pathname;
+  if (effectivePath.includes("[") || /%5b/i.test(effectivePath)) {
+    for (const h of ["x-matched-path", "x-forwarded-uri", "x-original-url"]) {
+      const candidate = headers?.get?.(h)?.split("?")[0];
+      if (candidate && !candidate.includes("[") && !/%5b/i.test(candidate)) {
+        effectivePath = candidate;
+        break;
+      }
+    }
+  }
+  const segs = effectivePath.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  const routeMatches = new URLSearchParams(headers?.get?.("x-now-route-matches") || "");
   const params = {};
+  let paramIdx = 0;
   for (let i = 0; i < pattern.length; i++) {
     const p = pattern[i];
-    if (p.startsWith("[...") && p.endsWith("]")) {
-      params[p.slice(4, -1)] = segs.slice(i);
+    if (p.startsWith("[[...") && p.endsWith("]]")) {
+      const name = p.slice(5, -2);
+      const idx = paramIdx++;
+      const tail = segs.slice(i);
+      if (tail.length === 0 || isParamPlaceholder(tail[0], p)) {
+        const fallback =
+          url?.searchParams?.get(`__sr_p${idx}`) ??
+          url?.searchParams?.get(name) ??
+          routeMatches.get(String(idx + 1)) ??
+          routeMatches.get(name);
+        if (fallback != null && fallback !== "" && !isParamPlaceholder(fallback, p)) {
+          params[name] = fallback
+            .split("/")
+            .filter(Boolean)
+            .map((s) => {
+              try {
+                return decodeURIComponent(s);
+              } catch {
+                return s;
+              }
+            });
+        } else {
+          params[name] = undefined;
+        }
+      } else {
+        params[name] = tail.map((s) => {
+          try {
+            return decodeURIComponent(s);
+          } catch {
+            return s;
+          }
+        });
+      }
       return params;
     }
-    if (p.startsWith("[") && p.endsWith("]")) params[p.slice(1, -1)] = segs[i];
+    if (p.startsWith("[...") && p.endsWith("]")) {
+      const name = p.slice(4, -1);
+      const idx = paramIdx++;
+      const tail = segs.slice(i);
+      if (tail.length === 0 || isParamPlaceholder(tail[0], p)) {
+        const fallback =
+          url?.searchParams?.get(`__sr_p${idx}`) ??
+          url?.searchParams?.get(name) ??
+          routeMatches.get(String(idx + 1)) ??
+          routeMatches.get(name);
+        if (fallback != null && !isParamPlaceholder(fallback, p)) {
+          params[name] = fallback
+            .split("/")
+            .filter(Boolean)
+            .map((s) => {
+              try {
+                return decodeURIComponent(s);
+              } catch {
+                return s;
+              }
+            });
+        } else {
+          params[name] = [];
+        }
+      } else {
+        params[name] = tail.map((s) => {
+          try {
+            return decodeURIComponent(s);
+          } catch {
+            return s;
+          }
+        });
+      }
+      return params;
+    }
+    if (p.startsWith("[") && p.endsWith("]")) {
+      const name = p.slice(1, -1);
+      const idx = paramIdx++;
+      const rawSeg = segs[i];
+      if (!isParamPlaceholder(rawSeg, p)) {
+        try {
+          params[name] = decodeURIComponent(rawSeg);
+        } catch {
+          params[name] = rawSeg;
+        }
+      } else {
+        const fallback =
+          url?.searchParams?.get(`__sr_p${idx}`) ??
+          url?.searchParams?.get(name) ??
+          routeMatches.get(String(idx + 1)) ??
+          routeMatches.get(name);
+        if (fallback != null && !isParamPlaceholder(fallback, p)) {
+          params[name] = fallback;
+        }
+      }
+    }
   }
   return params;
 }
@@ -144,10 +251,102 @@ function thrownToResponse(err, url) {
   return null;
 }
 
+async function nodeToWebRequest(req) {
+  const proto =
+    String(req.headers?.["x-forwarded-proto"] || (req.socket?.encrypted ? "https" : "http"))
+      .split(",")[0]
+      .trim() || "https";
+  const host =
+    String(req.headers?.["x-forwarded-host"] || req.headers?.host || "localhost")
+      .split(",")[0]
+      .trim() || "localhost";
+  const rawUrl = req.url || "/";
+  const fullUrl = /^https?:\/\//i.test(rawUrl)
+    ? rawUrl
+    : `${proto}://${host}${rawUrl.startsWith("/") ? "" : "/"}${rawUrl}`;
+
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers || {})) {
+    if (Array.isArray(v)) {
+      for (const item of v) if (item != null) headers.append(k, String(item));
+    } else if (v != null) {
+      headers.set(k, String(v));
+    }
+  }
+
+  const method = req.method || "GET";
+  let body;
+  if (method !== "GET" && method !== "HEAD") {
+    const chunks = [];
+    let total = 0;
+    if (req[Symbol.asyncIterator]) {
+      for await (const chunk of req) {
+        const bytes =
+          typeof chunk === "string"
+            ? new TextEncoder().encode(chunk)
+            : chunk instanceof Uint8Array
+              ? chunk
+              : new Uint8Array(chunk);
+        chunks.push(bytes);
+        total += bytes.byteLength;
+      }
+    }
+    if (total > 0) {
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.byteLength;
+      }
+      body = merged;
+    } else if (req.body != null) {
+      if (typeof req.body === "string" || req.body instanceof Uint8Array) body = req.body;
+      else if (typeof req.body === "object") body = JSON.stringify(req.body);
+    }
+  }
+
+  return new Request(fullUrl, { method, headers, body });
+}
+
+async function sendWebResponseToNode(webRes, res) {
+  res.statusCode = webRes.status;
+  const setCookies =
+    typeof webRes.headers.getSetCookie === "function" ? webRes.headers.getSetCookie() : [];
+  if (setCookies.length && typeof res.setHeader === "function") {
+    res.setHeader("set-cookie", setCookies);
+  }
+  if (typeof res.setHeader === "function") {
+    webRes.headers.forEach((v, k) => {
+      if (k.toLowerCase() === "set-cookie" && setCookies.length) return;
+      res.setHeader(k, v);
+    });
+  }
+  const ab = await webRes.arrayBuffer();
+  res.end(new Uint8Array(ab));
+}
+
 export function makeRouteHandler(opts) {
-  return async function fetch(request) {
+  async function webFetch(request) {
     const url = new URL(request.url);
-    const params = matchParams(opts.pattern || [], url.pathname);
+    const params = matchParams(opts.pattern || [], url.pathname, url, request.headers);
+    for (const k of [...url.searchParams.keys()]) {
+      if (k.startsWith("__sr_p")) url.searchParams.delete(k);
+    }
+    if (url.pathname.includes("[") || /%5b/i.test(url.pathname)) {
+      const resolvedSegs = [];
+      for (const seg of opts.pattern || []) {
+        if (seg.startsWith("[...") && seg.endsWith("]")) {
+          const v = params[seg.slice(4, -1)];
+          if (Array.isArray(v)) resolvedSegs.push(...v.map((s) => encodeURIComponent(String(s))));
+        } else if (seg.startsWith("[") && seg.endsWith("]")) {
+          const v = params[seg.slice(1, -1)];
+          if (v != null) resolvedSegs.push(encodeURIComponent(String(v)));
+        } else {
+          resolvedSegs.push(seg);
+        }
+      }
+      if (resolvedSegs.length) url.pathname = `/${resolvedSegs.join("/")}`;
+    }
     const setCookies = [];
     const localsMap = new Map();
     const ctx = {
@@ -268,16 +467,24 @@ export function makeRouteHandler(opts) {
         tree = createElement("div", { id: "__sr_island_root", "data-sr-params": JSON.stringify(ctx.params) }, tree);
       }
       const layouts = opts.layouts || [];
+      const templates = opts.templates || [];
       const slotsByLayout = opts.slots || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
-        const Layout = pick(layouts[i], "default", "Layout", "layout");
-        if (!Layout) continue;
-        const slotProps = {};
-        for (const slot of slotsByLayout[i] || []) {
-          const SlotComp = pick(slot.mod, "default", "Page", "Fragment", "page", "fragment");
-          if (SlotComp) slotProps[slot.name] = createElement(SlotComp, {});
+        if (templates[i]) {
+          const Template = pick(templates[i], "default", "Template", "template");
+          if (Template) tree = createElement(Template, null, tree);
         }
-        tree = createElement(Layout, slotProps, tree);
+        if (layouts[i]) {
+          const Layout = pick(layouts[i], "default", "Layout", "layout");
+          if (Layout) {
+            const slotProps = {};
+            for (const slot of slotsByLayout[i] || []) {
+              const SlotComp = pick(slot.mod, "default", "Page", "Fragment", "page", "fragment");
+              if (SlotComp) slotProps[slot.name] = createElement(SlotComp, {});
+            }
+            tree = createElement(Layout, slotProps, tree);
+          }
+        }
       }
       const body = await renderTree(tree);
       g.__SR_ROUTE_CTX__.current = null;
@@ -301,7 +508,17 @@ export function makeRouteHandler(opts) {
         if (p && typeof p === "object") plan = { ...plan, ...p };
       }
 
+      const isPpr = Boolean(
+        opts.ppr ||
+        opts.page?.experimental_ppr ||
+        opts.page?.config?.ppr ||
+        opts.config?.ppr
+      );
       const headers = new Headers({ "content-type": "text/html; charset=utf-8", "x-swift-rust-runtime": opts.runtime || "bun" });
+      if (isPpr) {
+        headers.set("x-swift-rust-render", "ppr");
+        headers.set("x-swift-rust-ppr", "1");
+      }
       for (const [k, v] of Object.entries(opts.config?.headers || {})) headers.set(k, String(v));
       const cc = cacheControl(plan);
       if (cc) headers.set("cache-control", cc);
@@ -314,5 +531,17 @@ export function makeRouteHandler(opts) {
       if (resp) return resp;
       return new Response(`Internal Error: ${err?.message || err}`, { status: 500 });
     }
-  };
+  }
+
+  async function universalHandler(req, res) {
+    if (res && typeof res.end === "function") {
+      const webReq = await nodeToWebRequest(req);
+      const webRes = await webFetch(webReq);
+      await sendWebResponseToNode(webRes, res);
+      return;
+    }
+    return webFetch(req);
+  }
+  universalHandler.fetch = universalHandler;
+  return universalHandler;
 }

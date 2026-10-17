@@ -27,9 +27,16 @@ async function waitReady(timeoutMs = 20_000) {
 }
 
 beforeAll(async () => {
-  proc = spawn("bun", [DEV, "--port", String(PORT), "--hostname", "127.0.0.1"], {
+  try {
+    writeFileSync(
+      join(FIX, "src", "components", "widget.tsx"),
+      "export function Widget() {\n  return <span data-widget>VERSION1</span>;\n}\n",
+    );
+  } catch {}
+  proc = spawn(process.execPath, [DEV, "--port", String(PORT), "--hostname", "127.0.0.1"], {
     cwd: FIX,
     stdio: "ignore",
+    env: process.env,
   });
   await waitReady();
 }, 30_000);
@@ -44,7 +51,7 @@ describe("dev server route pipeline", () => {
   test("health reports the installed framework version", async () => {
     const response = await get("/_swift-rust/health");
     expect(response.status).toBe(200);
-    expect((await response.json()).version).toBe(FRAMEWORK_VERSION);
+    expect(((await response.json()) as any).version).toBe(FRAMEWORK_VERSION);
   });
 
   test("default route resolves to the bun runtime", async () => {
@@ -77,6 +84,64 @@ describe("dev server route pipeline", () => {
     expect(html).toContain("abc-123");
   });
 
+  test("private folders starting with _ are excluded from routing", async () => {
+    const res = await get("/_secret");
+    expect(res.status).toBe(404);
+  });
+
+  test("folders prefixed with %5F map to URL segments starting with underscore", async () => {
+    const res = await get("/_public");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("escaped underscore content");
+  });
+
+  test("optional catch-all [[...slug]] matches base route with undefined param", async () => {
+    const res = await get("/docs");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/docs-slug:(?:<!-- -->)?ROOT_DOCS/);
+  });
+
+  test("optional catch-all [[...slug]] matches one or more segments", async () => {
+    const res = await get("/docs/intro/getting-started");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/docs-slug:(?:<!-- -->)?intro\/getting-started/);
+  });
+
+  test("intercepting route inside parallel slot renders on soft navigation", async () => {
+    const softRes = await fetch(`${BASE}/photo/42`, {
+      headers: { "x-swift-rust-nav": "1", "x-swift-rust-from": "/gallery" },
+    });
+    expect(softRes.status).toBe(200);
+    const softHtml = await softRes.text();
+    expect(softHtml).toContain("data-photo-modal");
+    expect(softHtml).toMatch(/photo-modal:(?:<!-- -->)?42/);
+    expect(softHtml).toContain("gallery-feed-content");
+  });
+
+  test("hard navigation directly to an intercepted target route renders the main page", async () => {
+    const hardRes = await get("/photo/42");
+    expect(hardRes.status).toBe(200);
+    const hardHtml = await hardRes.text();
+    expect(hardHtml).toContain("data-photo-page");
+    expect(hardHtml).toMatch(/full-photo-page:(?:<!-- -->)?42/);
+    expect(hardHtml).not.toContain("data-photo-modal");
+  });
+
+  test("standalone intercepting route (.) intercepts same-level route on soft navigation", async () => {
+    const hardRes = await get("/feed/preview/7");
+    expect(hardRes.status).toBe(200);
+    expect(await hardRes.text()).toMatch(/direct-preview:(?:<!-- -->)?7/);
+
+    const softRes = await fetch(`${BASE}/feed/preview/7`, {
+      headers: { "x-swift-rust-nav": "1", "x-swift-rust-from": "/feed" },
+    });
+    expect(softRes.status).toBe(200);
+    expect(await softRes.text()).toMatch(/intercepted-preview:(?:<!-- -->)?7/);
+  });
+
   test("the navigator runtime is served", async () => {
     const r = await get("/_swift-rust/navigator.js");
     expect(r.status).toBe(200);
@@ -88,9 +153,7 @@ describe("dev server route pipeline", () => {
     expect(lausanne.status).toBe(200);
     expect(lausanne.headers.get("content-type")).toBe("font/otf");
 
-    const varent = await get(
-      "/_swift-rust/fonts/varent-font-family/VarentGrotesk-Bold.otf",
-    );
+    const varent = await get("/_swift-rust/fonts/varent-font-family/VarentGrotesk-Bold.otf");
     expect(varent.status).toBe(200);
     expect(varent.headers.get("content-type")).toBe("font/otf");
   });
@@ -130,36 +193,51 @@ describe("dev server route pipeline", () => {
 
     const widget = join(FIX, "src", "components", "widget.tsx");
     const original = readFileSync(widget, "utf8");
-    const res = await fetch(`${BASE}/_swift-rust/hmr`);
+    await new Promise((r) => setTimeout(r, 400));
+    const abortCtrl = new AbortController();
+    const res = await fetch(`${BASE}/_swift-rust/hmr`, { signal: abortCtrl.signal });
     if (!res.body) throw new Error("HMR response did not include a body");
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = "";
-    let reloadSeen = false;
+    const events: string[] = [];
+    void (async () => {
+      let buf = "";
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i = buf.indexOf("\n\n");
+          while (i !== -1) {
+            const frame = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+            if (dataLine) {
+              const msg = JSON.parse(dataLine.slice(5).trim());
+              const data = msg?.event && msg.data ? msg.data : msg;
+              if (data?.type) events.push(data.type);
+            }
+            i = buf.indexOf("\n\n");
+          }
+        }
+      } catch {}
+    })();
+    const waitFor = async (type: string, ms: number) => {
+      const by = Date.now() + ms;
+      while (Date.now() < by && !events.includes(type)) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return events.includes(type);
+    };
     try {
       writeFileSync(widget, original.replace("VERSION1", "SSE_RELOAD"));
-      const deadline = Date.now() + 6000;
-      while (Date.now() < deadline && !reloadSeen) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let i = buf.indexOf("\n\n");
-        while (i !== -1) {
-          const frame = buf.slice(0, i);
-          buf = buf.slice(i + 2);
-          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-          if (!dataLine) continue;
-          const msg = JSON.parse(dataLine.slice(5).trim());
-          const data = msg?.event && msg.data ? msg.data : msg;
-          if (data.type === "reload") reloadSeen = true;
-          i = buf.indexOf("\n\n");
-        }
-      }
+      expect(await waitFor("reload", 6000)).toBe(true);
     } finally {
+      abortCtrl.abort();
       await reader.cancel().catch(() => {});
       writeFileSync(widget, original);
+      await new Promise((r) => setTimeout(r, 400));
     }
-    expect(reloadSeen).toBe(true);
   }, 12_000);
 
   // A 'use server' component imported into a 'use client' page used to silently
@@ -322,7 +400,8 @@ describe("dev server route pipeline", () => {
   test("HMR: a syntax error broadcasts an error event, then recovers on fix", async () => {
     const widget = join(FIX, "src", "components", "widget.tsx");
     const original = readFileSync(widget, "utf8");
-    const res = await fetch(`${BASE}/_swift-rust/hmr`);
+    const abortCtrl = new AbortController();
+    const res = await fetch(`${BASE}/_swift-rust/hmr`, { signal: abortCtrl.signal });
     if (!res.body) throw new Error("HMR response did not include a body");
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -341,10 +420,11 @@ describe("dev server route pipeline", () => {
             const frame = buf.slice(0, i);
             buf = buf.slice(i + 2);
             const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-            if (!dataLine) continue;
-            const msg = JSON.parse(dataLine.slice(5).trim());
-            const data = msg?.event && msg.data ? msg.data : msg;
-            if (data.type) events.push(data.type);
+            if (dataLine) {
+              const msg = JSON.parse(dataLine.slice(5).trim());
+              const data = msg?.event && msg.data ? msg.data : msg;
+              if (data.type) events.push(data.type);
+            }
             i = buf.indexOf("\n\n");
           }
         }
@@ -366,9 +446,123 @@ describe("dev server route pipeline", () => {
       writeFileSync(widget, original);
       expect(await waitFor("reload", 6000)).toBe(true);
     } finally {
+      abortCtrl.abort();
       await reader.cancel().catch(() => {});
       writeFileSync(widget, original);
       await new Promise((r) => setTimeout(r, 400));
     }
   }, 20_000);
+
+  test("template.tsx wraps the page content", async () => {
+    const res = await get("/templated");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('data-templated="true"');
+    expect(html).toContain("Templated Content");
+  });
+
+  test("default.tsx serves as fallback for unmatched parallel route slots", async () => {
+    const res = await get("/gallery");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('data-modal-default="true"');
+  });
+
+  test("/robots.txt is generated dynamically from app/robots.ts", async () => {
+    const res = await get("/robots.txt");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const txt = await res.text();
+    expect(txt).toContain("User-agent: *");
+    expect(txt).toContain("Allow: /");
+    expect(txt).toContain("Disallow: /secret/");
+    expect(txt).toContain("Sitemap: https://example.com/sitemap.xml");
+  });
+
+  test("/sitemap.xml is generated dynamically from app/sitemap.ts", async () => {
+    const res = await get("/sitemap.xml");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/xml");
+    const xml = await res.text();
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("<loc>https://example.com</loc>");
+    expect(xml).toContain("<loc>https://example.com/about</loc>");
+    expect(xml).toContain("<priority>1.0</priority>");
+  });
+
+  test("instrumentation.ts register() runs on server startup", async () => {
+    const res = await get("/api/instrumentation");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.registered).toBe(true);
+  });
+
+  test("<Script> component renders with strategy and attributes", async () => {
+    const res = await get("/scriptdemo");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="analytics"');
+    expect(html).toContain('data-strategy="afterInteractive"');
+    expect(html).toContain("analytics loaded");
+  });
+
+  test("<Form action={serverAction}> renders with action id hidden input", async () => {
+    const res = await get("/serveraction");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('action="/_swift-rust/action"');
+    expect(html).toContain('name="__sr_action_id"');
+    expect(html).toContain('value="src/app/actions.ts#addItem"');
+  });
+
+  test("Server Action executes via POST with FormData", async () => {
+    const fd = new FormData();
+    fd.append("__sr_action_id", "src/app/actions.ts#addItem");
+    fd.append("name", "swift-item-99");
+    const res = await fetch(`${BASE}/_swift-rust/action`, {
+      method: "POST",
+      body: fd,
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.ok).toBe(true);
+    expect(json.data.success).toBe(true);
+    expect(json.data.item).toBe("swift-item-99");
+  });
+
+  test("Server Action executes via POST with JSON RPC arguments", async () => {
+    const res = await fetch(`${BASE}/_swift-rust/action`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-action-id": "src/app/actions.ts#rpcMultiply",
+      },
+      body: JSON.stringify([6, 7]),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.ok).toBe(true);
+    expect(json.data.result).toBe(42);
+  });
+
+  test("Partial Prerendering (PPR) responds with hybrid streaming headers and shell", async () => {
+    const res = await get("/ppr-demo");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-swift-rust-render")).toBe("ppr");
+    expect(res.headers.get("x-swift-rust-ppr")).toBe("1");
+    const html = await res.text();
+    expect(html).toContain("Partial Prerendering Shell");
+    expect(html).toContain("Streamed Hybrid Content");
+  });
+
+  test("<SafeHtml> renders cryptographically signed HTML and blocks unauthenticated raw strings", async () => {
+    const res = await get("/safe-html-demo");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('data-swift-rust-safe="verified"');
+    expect(html).toContain('<section id="trusted-zone"><h2>Verified Codebase HTML</h2></section>');
+    expect(html).toContain('data-swift-rust-safe="blocked"');
+    expect(html).not.toContain("<script>alert('xss-attempt')</script>");
+    expect(html).toContain("&lt;script&gt;alert(&#x27;xss-attempt&#x27;)&lt;/script&gt;");
+  });
 });

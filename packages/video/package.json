@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/video",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Video component for swift-rust. HTML5, YouTube, Vimeo, lightbox, and background-video modes.",
   "license": "MIT",
   "homepage": "https://swift-rust.dev",

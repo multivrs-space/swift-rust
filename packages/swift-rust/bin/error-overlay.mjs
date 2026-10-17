@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { relative } from "node:path";
 import { FRAMEWORK_VERSION } from "./runtime/framework-version.mjs";
 
 function escapeHtml(s) {
@@ -11,141 +12,312 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
-function classifyError(message) {
-  if (!message) return { kind: "error", code: "E0001", title: "Unknown error" };
-  const m = String(message);
+/**
+ * Unwraps Bun.build AggregateError (`err.errors`) or failed build `logs` into a
+ * clear, human-readable Error with file/line/column metadata instead of generic
+ * "Bundle failed".
+ */
+export function normalizeBuildError(err, logs = [], cwd = process.cwd()) {
+  const rawItems = [
+    ...(Array.isArray(err?.errors) ? err.errors : []),
+    ...(Array.isArray(logs) ? logs : []),
+  ];
 
-  if (/Cannot find module|SyntaxError|Unexpected token|is not defined|has no exported member|export.*not found/i.test(m)) {
+  if (rawItems.length === 0 && err instanceof Error && err.message !== "Bundle failed") {
+    return err;
+  }
+
+  const formattedMessages = [];
+  let primaryFile = err?.file || null;
+  let primaryLine = err?.line || 0;
+  let primaryColumn = err?.column || 0;
+
+  for (const item of rawItems) {
+    const msg = item?.message || String(item);
+    const pos = item?.position;
+    if (pos?.file) {
+      const relFile = cwd ? relative(cwd, pos.file) : pos.file;
+      const loc = `${relFile}:${pos.line || 1}:${pos.column || 1}`;
+      formattedMessages.push(`${msg} (at ${loc})`);
+      if (!primaryFile) {
+        primaryFile = pos.file;
+        primaryLine = pos.line || 1;
+        primaryColumn = pos.column || 1;
+      }
+    } else {
+      formattedMessages.push(msg);
+    }
+  }
+
+  const detail =
+    formattedMessages.filter(Boolean).join("\n") ||
+    (err?.message && err.message !== "Bundle failed" ? err.message : "Module bundling failed — check imports and syntax in this file.");
+
+  const out = new Error(detail);
+  out.name = err?.name || "BuildError";
+  if (primaryFile) out.file = primaryFile;
+  if (primaryLine) out.line = primaryLine;
+  if (primaryColumn) out.column = primaryColumn;
+  if (err?.stack) out.stack = err.stack;
+  return out;
+}
+
+export function classifyError(message, context = "") {
+  if (!message) {
+    return {
+      kind: "error",
+      code: "E0001",
+      title: "Unknown error",
+      explain: "An unexpected error occurred without a detail message.",
+      solution: "Check the terminal logs or reload the page.",
+      suggestions: ["Reload the page", "Restart `bun run dev`"],
+    };
+  }
+  const m = `${String(message)} ${String(context)}`;
+
+  if (/use server.*imported into.*use client|Server Component into a Client Component/i.test(m)) {
+    return {
+      kind: "compile",
+      code: "E0404",
+      title: "Server module imported inside a Client Component",
+      explain:
+        "A file marked with `'use client'` runs in the browser and cannot directly import a `'use server'` component.",
+      solution:
+        "Move the server logic into a route `loader.ts` or `action.ts` file, or remove `'use client'` from the parent page and keep `'use client'` only on interactive leaf components.",
+      suggestions: [
+        "Pass server data down as props from a server page or `loader.ts`",
+        "For mutations, export an async function from `actions.ts` with `'use server'`",
+        "Remove `'use client'` from the page if only a child component needs interactivity",
+      ],
+    };
+  }
+
+  if (/use static.*dynamic|set a cookie during render/i.test(m)) {
+    return {
+      kind: "compile",
+      code: "E0405",
+      title: "Static route used a dynamic feature",
+      explain:
+        "This route is marked `'use static'`, which guarantees build-time prerendering and CDN caching, so it cannot use request-time features like cookies, `action.ts`, or `'use node'`.",
+      solution:
+        "Remove `'use static'` from the top of the file if this page needs request-time data, or remove the dynamic feature (`cookies`, `action.ts`, runtime directive) to keep it static.",
+      suggestions: [
+        "Remove `'use static'` to allow dynamic request-time rendering",
+        "Use `revalidate.ts` (ISR) if you want static caching with periodic background updates",
+      ],
+    };
+  }
+
+  if (/Could not resolve|Cannot find module|Module not found/i.test(m)) {
+    const specMatch = String(message).match(/(?:Could not resolve|Cannot find module)[:\s]+['"]?([^'"\s\n)]+)/i);
+    const missingSpec = specMatch ? specMatch[1] : null;
+    const isRelative = missingSpec && (missingSpec.startsWith(".") || missingSpec.startsWith("@/"));
     return {
       kind: "compile",
       code: "E0401",
-      title: "Module or symbol not found",
-      explain:
-        "The compiler could not resolve a module, identifier, or export. " +
-        "This usually means a typo, a missing dependency, or a case-sensitivity issue.",
+      title: missingSpec ? `Cannot find module "${missingSpec}"` : "Module not found",
+      explain: missingSpec
+        ? `The bundler tried to import "${missingSpec}", but no matching file or installed package was found.`
+        : "The compiler could not resolve an imported module or package.",
+      solution: isRelative
+        ? `Verify that "${missingSpec}" exists and check the file name spelling/case.`
+        : missingSpec
+          ? `Install the missing package with \`bun add ${missingSpec}\` (or run \`bun run build\` if it is a workspace package).`
+          : "Check the import path spelling or run `bun install` to install missing packages.",
       suggestions: [
-        "Check the spelling and case of the import path",
-        "Verify the file exists at the given path",
-        "Run `bun install` if the module is from a package",
-        "Check that the symbol is actually exported from the module",
+        isRelative
+          ? `Check that the file "${missingSpec}" exists (.tsx, .ts, .js)`
+          : `Run \`bun install\` or \`bun add ${missingSpec || "<package>"}\``,
+        "If importing a monorepo package (like `swift-rust`), run `bun run build` so `dist/` is up to date",
+        "Verify `tsconfig.json` path aliases (e.g. `@/*` -> `./src/*`)",
       ],
     };
   }
-  if (/does not provide an export named|TypeError.*is not a function/i.test(m)) {
+
+  if (/Cannot declare.*twice|already been declared|SyntaxError|Unexpected token|Expected/i.test(m)) {
+    return {
+      kind: "compile",
+      code: "E0401",
+      title: "Syntax or duplicate declaration error",
+      explain:
+        "The file contains invalid TypeScript/JSX syntax or declares the same variable/import name twice in the same scope.",
+      solution:
+        "Check the highlighted line below for a duplicate identifier, unclosed JSX tag, or missing bracket.",
+      suggestions: [
+        "Rename or remove the duplicate import/variable declaration",
+        "Check for unclosed JSX tags, missing parentheses, or stray characters",
+        "Run `bun run typecheck` to see full TypeScript diagnostics",
+      ],
+    };
+  }
+
+  if (/is not defined|has no exported member|export.*not found|does not provide an export named/i.test(m)) {
     return {
       kind: "compile",
       code: "E0402",
-      title: "Invalid import or usage",
+      title: "Missing export or undefined symbol",
       explain:
-        "You are trying to use something that the module does not export, " +
-        "or you are calling something that is not a function.",
+        "You are importing or referencing a name that does not exist in the target module or current scope.",
+      solution:
+        "Check whether the component uses a named export (`import { X }`) vs. a default export (`import X`), and make sure it is exported from the source file.",
       suggestions: [
-        "Run `bun pm ls` to verify the package is installed",
-        "Check the package's public API in its README",
-        "If you added a default export, make sure to use `import X from ...`",
+        "Switch between `import { Name } from '...'` and `import Name from '...'`",
+        "Open the target module and confirm `export function ...` or `export const ...` is present",
+        "If using a React hook (`useState`, `useEffect`), add `import { useState } from 'react'`",
       ],
     };
   }
+
+  if (/TypeError.*is not a function|has no default export/i.test(m)) {
+    return {
+      kind: "compile",
+      code: "E0402",
+      title: "Invalid component or function export",
+      explain:
+        "A page, layout, or component was called as a function, but the imported value is `undefined` or an object.",
+      solution:
+        "Ensure your `page.tsx` or `layout.tsx` has `export default function Page() { ... }` and that all imported components match their export style.",
+      suggestions: [
+        "Add `export default function Page()` to your route's `page.tsx`",
+        "Verify named vs. default imports for components used on this page",
+      ],
+    };
+  }
+
+  if (/island bundle failed|Bundle failed/i.test(m)) {
+    return {
+      kind: "compile",
+      code: "E0403",
+      title: "Client island bundle failed",
+      explain:
+        "The browser bundler could not package this `'use client'` component and its imports for client-side hydration.",
+      solution:
+        "Make sure all imports inside this `'use client'` file are browser-compatible (no `node:fs` or server-only modules) and that workspace packages are built (`bun run build`).",
+      suggestions: [
+        "Remove any Node-only imports (`node:fs`, `node:child_process`, database clients) from `'use client'` files",
+        "Run `bun run build` if a workspace package's `dist/` folder was recently cleaned",
+        "Move server-only code into `loader.ts` or `actions.ts`",
+      ],
+    };
+  }
+
   if (/Failed to fetch|FetchError|NetworkError|ENOTFOUND|ECONNREFUSED/i.test(m)) {
     return {
       kind: "runtime",
       code: "E0901",
       title: "Network request failed",
       explain:
-        "A fetch or HTTP call to an external service failed. " +
-        "The server may be down, the URL may be wrong, or the network may be unavailable.",
+        "A `fetch()` call to an external URL or API failed because the server could not be reached.",
+      solution:
+        "Verify the API URL is running and reachable, and check your `.env` variables.",
       suggestions: [
-        "Check your internet connection",
-        "Verify the URL is correct and reachable",
-        "If calling your own API, make sure the dev server is running",
-        "Check for CORS issues if calling a third-party API from the browser",
+        "Verify the URL protocol (`http://` vs `https://`), host, and port",
+        "If calling a local backend service, confirm it is running",
+        "Wrap external `fetch()` calls in `try / catch` to render a graceful fallback",
       ],
     };
   }
+
   if (/notFound\(\)|NEXT_NOT_FOUND|NOT_FOUND/i.test(m)) {
     return {
       kind: "notFound",
       code: "E1404",
-      title: "Resource not found",
+      title: "Page or resource not found (404)",
       explain:
-        "The page or resource you requested could not be found. " +
-        "This is typically thrown intentionally with notFound() to render a 404 page.",
+        "No matching route `page.tsx` was found for this URL, or `notFound()` was called during rendering.",
+      solution:
+        "Create an `app/<segment>/page.tsx` file for this URL, or add a custom `app/not-found.tsx` boundary.",
       suggestions: [
-        "Check the URL is correct",
-        "If this is unexpected, verify the data source returned a valid record",
-        "Add a not-found.tsx in this segment to provide a custom 404",
+        "Check the URL spelling in the address bar",
+        "Create `src/app/<route>/page.tsx` with `export default function Page()`",
+        "Add `src/app/not-found.tsx` to customize the 404 page",
       ],
     };
   }
+
   if (/redirect/i.test(m)) {
     return {
       kind: "redirect",
       code: "E1301",
-      title: "Redirect",
+      title: "Redirect triggered",
       explain:
-        "A redirect was thrown from this page. " +
-        "This is expected behavior when calling redirect() from a server component.",
+        "A `redirect()` call interrupted rendering to send the browser to another URL.",
+      solution:
+        "No action needed if this redirect is intentional; otherwise check the `redirect()` condition in your page, loader, or guard.",
       suggestions: [
-        "If this is unexpected, check the calling code for an unintended redirect()",
+        "Check `guard.ts`, `loader.ts`, or `page.tsx` for `redirect('/...')` calls",
       ],
     };
   }
+
   if (/hydration|Text content does not match|There was an error while hydrating/i.test(m)) {
     return {
       kind: "runtime",
       code: "E0501",
-      title: "Hydration mismatch",
+      title: "React hydration mismatch",
       explain:
-        "The server-rendered HTML does not match what the client tried to render. " +
-        "This usually means a component renders different output on the server vs. the client.",
+        "The HTML rendered on the server did not match the first render in the browser.",
+      solution:
+        "Move browser-only or random values (`window`, `localStorage`, `Date.now()`, `Math.random()`) inside a `useEffect(...)` hook.",
       suggestions: [
-        "Avoid using `new Date()`, `Math.random()`, or other non-deterministic values in render",
-        "Check that `typeof window` checks are inside `useEffect`",
-        "Verify the same data is available on both server and client",
+        "Do not branch on `typeof window !== 'undefined'` directly inside JSX return output",
+        "Use `useEffect` + `useState` for client-only values like timestamps or `localStorage`",
+        "Ensure invalid HTML nesting (e.g. `<p>` inside `<p>` or `<div>` inside `<p>`) is fixed",
       ],
     };
   }
+
   if (/ENOSPC|EACCES|EADDRINUSE|EADDRNOTAVAIL|port.*already|port.*in use/i.test(m)) {
     return {
       kind: "system",
       code: "E0002",
-      title: "Server failed to start",
+      title: "Server port or system resource error",
       explain:
-        "The dev server could not bind to the requested port, " +
-        "or it ran out of system resources.",
+        "The server could not bind to the requested port or ran out of disk/file-watcher resources.",
+      solution:
+        "Run with `--port 3211` (or kill the existing process on port 3210 with `lsof -ti:3210 | xargs kill -9`).",
       suggestions: [
-        "Close any other process using this port (usually 3210)",
-        "Run with --port <number> to use a different port",
-        "Check disk space with `df -h`",
+        "Free the port: `lsof -ti:3210 | xargs kill -9`",
+        "Or start on another port: `bun swift-rust dev --port 3211`",
       ],
     };
   }
+
   return {
     kind: "error",
     code: "E0001",
-    title: "An unexpected error occurred",
+    title: "Runtime error while rendering",
     explain:
-      "The dev server caught an error it could not classify. " +
-      "Read the message and stack trace below to identify the cause.",
+      "An unhandled exception was thrown while executing your component, loader, or route handler.",
+    solution:
+      "Check the highlighted source line below and guard against `undefined` / `null` values before accessing properties.",
     suggestions: [
-      "Read the error message carefully",
-      "Check the stack trace to find the failing function",
-      "Try reloading the page",
+      "Inspect the source frame below to see the exact line that threw",
+      "Use optional chaining (`obj?.prop`) if data can be undefined",
+      "Add an `error.tsx` boundary in this route folder to handle runtime errors gracefully",
     ],
   };
 }
 
 function extractLocation(err) {
   if (!err) return null;
-  const stack = err.stack || "";
+  if (err.file && err.line) {
+    return {
+      file: err.file,
+      line: Number(err.line) || 1,
+      column: Number(err.column) || 1,
+    };
+  }
+  const combined = `${err.message || ""}\n${err.stack || ""}`;
   const patterns = [
-    /at\s+.*?\s+\(([^()]+?):(\d+):(\d+)\)/,
-    /at\s+([^:]+):(\d+):(\d+)/,
-    /([^()\n]+\.(?:tsx?|jsx?|mjs|js)):(\d+):?(\d+)?/,
+    /\(at\s+([^():\n]+?\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)\)/,
+    /at\s+.*?\s+\(([^()]+?\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)\)/,
+    /at\s+([^\s()]+\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)/,
+    /([^()\s\n]+\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)/,
   ];
   for (const p of patterns) {
-    const m = stack.match(p);
-    if (m) {
+    const m = combined.match(p);
+    if (m && !m[1].includes("bin/dev-server.mjs") && !m[1].includes("bin/error-overlay.mjs")) {
       return {
         file: m[1],
         line: parseInt(m[2] || "0", 10),
@@ -157,6 +329,68 @@ function extractLocation(err) {
     return { file: err.fileName || "<unknown>", line: err.lineNumber, column: err.columnNumber || 0 };
   }
   return null;
+}
+
+/**
+ * Formats a clear, structured terminal error block with:
+ *   - Error code + title
+ *   - Plain-English explanation ("Why")
+ *   - Exact file:line:col + code snippet
+ *   - Actionable "Solution"
+ */
+export function formatTerminalError(err, context = "Error", cwd = process.cwd(), paint = (_c, s) => s) {
+  const normalized = normalizeBuildError(err, [], cwd);
+  const rawMsg = normalized?.message || String(err || "Unknown error");
+  const cleanContext = context ? context.replace(cwd + "/", "") : "Error";
+  const cls = classifyError(rawMsg, cleanContext);
+  const loc = extractLocation(normalized);
+
+  const lines = [];
+  lines.push(
+    ` ${paint("red", "✗")} ${paint("bold", `[${cls.code}] ${cls.title}`)} ${paint("dim", `(${cleanContext})`)}`,
+  );
+
+  for (const msgLine of rawMsg.split("\n").slice(0, 6)) {
+    const trimmed = msgLine.replaceAll(cwd + "/", "").trim();
+    if (trimmed) {
+      lines.push(`│  ${paint("red", trimmed)}`);
+    }
+  }
+
+  if (loc?.file) {
+    const absFile = existsSync(loc.file) ? loc.file : cwd ? `${cwd}/${loc.file}` : loc.file;
+    const relFile = cwd ? relative(cwd, absFile) : loc.file;
+    lines.push(`│`);
+    lines.push(`│  ${paint("dim", "Location:")} ${paint("cyan", `${relFile}:${loc.line}:${loc.column || 1}`)}`);
+    const snippet = readFileLines(absFile, loc.line, 2);
+    if (snippet && snippet.length > 0) {
+      const width = String(snippet[snippet.length - 1].number).length;
+      for (const s of snippet) {
+        const num = String(s.number).padStart(width, " ");
+        if (s.number === loc.line) {
+          lines.push(`│  ${paint("red", `▶ ${num}`)} ${paint("dim", "│")} ${s.text}`);
+        } else {
+          lines.push(`│    ${paint("dim", `${num} │ ${s.text}`)}`);
+        }
+      }
+    }
+  }
+
+  lines.push(`│`);
+  lines.push(`│  ${paint("yellow", "💡 Solution:")} ${cls.solution || cls.suggestions?.[0] || "Check the error details above."}`);
+  if (cls.suggestions && cls.suggestions.length > 1) {
+    for (const tip of cls.suggestions.slice(1, 3)) {
+      lines.push(`│     ${paint("dim", `• ${tip}`)}`);
+    }
+  }
+
+  return {
+    formatted: lines.join("\n"),
+    code: cls.code,
+    title: cls.title,
+    message: rawMsg.replaceAll(cwd + "/", ""),
+    solution: cls.solution || cls.suggestions?.[0] || "",
+  };
 }
 
 function readFileLines(filePath, targetLine, context = 3) {
@@ -211,16 +445,21 @@ function getExplainable({ code, title, kind }) {
   };
 }
 
-export function errorOverlayHTML({ message, stack, hint, file, line, column, kind }) {
+/**
+ * @param {{ message?: string; stack?: string; hint?: string; file?: string; line?: number; column?: number; kind?: string }} [params]
+ * @returns {string}
+ */
+export function errorOverlayHTML({ message, stack, hint, file, line, column, kind } = {}) {
   const errMsg = message || "An unexpected error occurred";
   const cls = classifyError(errMsg);
   const finalKind = kind || cls.kind;
   const finalCode = cls.code;
   const finalTitle = cls.title;
   const explain = cls.explain;
+  const solution = cls.solution || hint || cls.suggestions?.[0] || "";
   const suggestions = cls.suggestions || [];
 
-  const location = extractLocation({ message: errMsg, stack });
+  const location = extractLocation({ message: errMsg, stack, file, line, column });
   const finalFile = file || location?.file;
   const finalLine = line || location?.line || 0;
   const finalColumn = column || location?.column || 0;
@@ -423,6 +662,27 @@ export function errorOverlayHTML({ message, stack, hint, file, line, column, kin
     margin-bottom: 16px;
   }
 
+  .solution-box {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+  .solution-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #34d399;
+    margin-bottom: 4px;
+  }
+  .solution-text {
+    font-size: 13.5px;
+    color: #ecfdf5;
+    line-height: 1.5;
+  }
+
   .actions { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
   .btn {
     display: inline-flex; align-items: center; gap: 6px;
@@ -484,10 +744,17 @@ export function errorOverlayHTML({ message, stack, hint, file, line, column, kin
       </div>
       <div class="explain">${escapeHtml(explain)}</div>
 
-      ${hint ? `<div class="hint">${escapeHtml(hint)}</div>` : ""}
+      ${solution ? `
+        <div class="solution-box">
+          <div class="solution-label">💡 How to fix this (Solution)</div>
+          <div class="solution-text">${escapeHtml(solution)}</div>
+        </div>
+      ` : ""}
+
+      ${hint && hint !== solution ? `<div class="hint">${escapeHtml(hint)}</div>` : ""}
 
       ${suggestions.length > 0 ? `
-        <div class="section-label">Suggested fixes</div>
+        <div class="section-label">Step-by-step checklist</div>
         <ul class="suggestions">
           ${suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}
         </ul>

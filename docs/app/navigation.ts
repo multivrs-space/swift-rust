@@ -25,6 +25,8 @@ export const NAV = [
     items: [
       { label: "Authentication", href: "/docs/guides/auth" },
       { label: "Forms", href: "/docs/guides/forms" },
+      { label: "Server actions", href: "/docs/guides/server-actions" },
+      { label: "Caching & PPR", href: "/docs/guides/caching-and-ppr" },
       { label: "API routes", href: "/docs/guides/api-routes" },
       { label: "Metadata & SEO", href: "/docs/guides/metadata" },
       { label: "Error handling", href: "/docs/guides/error-handling" },
@@ -35,6 +37,8 @@ export const NAV = [
   {
     title: "API Reference",
     items: [
+      { label: "SafeHtml", href: "/docs/api-reference/components/safe-html" },
+      { label: "Script", href: "/docs/api-reference/components/script" },
       { label: "Image", href: "/docs/api-reference/components/image" },
       { label: "Font", href: "/docs/api-reference/components/font" },
       { label: "Video", href: "/docs/api-reference/components/video" },

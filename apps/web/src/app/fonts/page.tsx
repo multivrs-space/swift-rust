@@ -1,4 +1,4 @@
-import type { Metadata } from "swift-rust";
+import { SafeHtml, createTrustedHtml, type Metadata } from "swift-rust";
 import { localFontCss } from "swift-rust/font";
 import {
   DxSlight,
@@ -263,7 +263,7 @@ export default function FontsPage() {
           served from <code className="font-mono text-xs">/_swift-rust/fonts/</code>. Use them
           when you need exact control over weights or want to avoid a network round-trip.
         </p>
-        <style dangerouslySetInnerHTML={{ __html: localCss }} />
+        <SafeHtml as="style" content={createTrustedHtml(localCss)} />
 
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {LOCAL.filter((f) => f.name !== "Zimula").map((f) => {
@@ -351,17 +351,17 @@ export { heading };`}
           <CodeBlock
             filename="app/layout.tsx"
             caption="Local font CSS · inject @font-face declarations from the framework"
-            code={`import { localFontCss, Lausanne } from "swift-rust/font";
-import { Lausanne as LausanneFont } from "swift-rust/font";
+            code={`import { SafeHtml, createTrustedHtml } from "swift-rust";
+import { localFontCss, Lausanne } from "swift-rust/font";
 
-const css = localFontCss();
+const css = createTrustedHtml(localFontCss());
 const lausanne = Lausanne({ variable: true });
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html className={lausanne.variable}>
       <head>
-        <style dangerouslySetInnerHTML={{ __html: css }} />
+        <SafeHtml as="style" content={css} />
       </head>
       <body>{children}</body>
     </html>

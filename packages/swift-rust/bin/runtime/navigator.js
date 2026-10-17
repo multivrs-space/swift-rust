@@ -31,10 +31,14 @@
 
   // Fetch (and cache) a route's HTML. Deduped per URL so prefetch + click share.
   function fetchDoc(url) {
-    const key = url;
+    const fromPath = location.pathname;
+    const key = fromPath + "->" + url;
     if (nav.cache.has(key)) return Promise.resolve(nav.cache.get(key));
     if (nav.inflight.has(key)) return nav.inflight.get(key);
-    const p = fetch(url, { headers: { "x-swift-rust-nav": "1" }, credentials: "same-origin" })
+    const p = fetch(url, {
+      headers: { "x-swift-rust-nav": "1", "x-swift-rust-from": fromPath },
+      credentials: "same-origin",
+    })
       .then((res) => {
         if (!res.ok && res.status !== 404) throw new Error("nav fetch " + res.status);
         return res.text();
