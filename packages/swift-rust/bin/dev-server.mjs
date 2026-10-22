@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, unlinkSync, watch as fsWatch } from "node:fs";
 import { join, resolve, extname, relative, dirname, basename, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +10,20 @@ import {
   formatTerminalError,
   normalizeBuildError,
 } from "./error-overlay.mjs";
+import {
+  diagnose,
+  invalidRuntimeWarning,
+  missingDefaultExportDiagnostic,
+  noAppDirDiagnostic,
+  notFoundDiagnostic,
+  renderTerminal,
+  routingFileWarning,
+  serverActionNotFoundDiagnostic,
+  serverInClientDiagnostic,
+  staticCookieDiagnostic,
+  toError,
+  useStaticConflictDiagnostic,
+} from "./diagnostics.mjs";
 import {
   isSupportedBunVersion,
   unsupportedBunMessage,
@@ -163,9 +178,28 @@ function logCompiling(route) {
   logLine([` ${paint("yellow", "○")} ${paint("dim", "Compiling")} ${paint("cyan", safe)} ${paint("dim", "…")}`]);
 }
 
-function logError(err, context) {
-  const { formatted } = formatTerminalError(err, context || "Error", cwd, paint);
-  process.stdout.write(`${formatted}\n`);
+function logError(err, context, extra) {
+  const { formatted, diagnostic } = formatTerminalError(err, context || null, cwd, paint, extra);
+  process.stdout.write(`\n${formatted}\n\n`);
+  return diagnostic;
+}
+
+function logDiagnostic(diagnostic) {
+  process.stdout.write(`\n${renderTerminal(diagnostic, paint)}\n\n`);
+  return diagnostic;
+}
+
+// Outstanding problems surfaced in the dev toolbar's Issues panel. Keyed so a
+// later success for the same source (route, island, file) clears its entry.
+const devIssues = new Map();
+function setIssue(key, diagnostic) {
+  devIssues.set(key, diagnostic);
+}
+function clearIssue(key) {
+  devIssues.delete(key);
+}
+function clearIssuesWithPrefix(prefix) {
+  for (const key of devIssues.keys()) if (key.startsWith(prefix)) devIssues.delete(key);
 }
 
 function logRequest({ method, url, status, duration, compileMs }) {
@@ -1039,6 +1073,7 @@ async function buildSsrModule(filePath, gen) {
       result = await Bun.build({
         entrypoints: [filePath],
         target: "bun",
+        sourcemap: "inline",
         plugins: [
           makeUseCachePlugin(temps),
           makeClientIslandPlugin(temps, filePath),
@@ -1718,20 +1753,7 @@ function findServerComponentInClientGraph(entryFile, seen = new Set()) {
 export function assertNoServerComponentInClientPage(pageFile) {
   if (!isClientPage(pageFile)) return;
   const offender = findServerComponentInClientGraph(pageFile);
-  if (offender) {
-    const rel = (f) => relative(cwd, f);
-    throw new Error(
-      `Unsupported: '${rel(offender)}' declares 'use server' but is imported into the ` +
-      `'use client' page '${rel(pageFile)}'.\n\n` +
-      `swift-rust uses classic SSR + client islands, not React Server Components, so a ` +
-      `'use server' component inside a client tree cannot run on the server — React forbids ` +
-      `importing a Server Component into a Client Component.\n\n` +
-      `Fix one of these:\n` +
-      `  • Remove the 'use server' directive — the component will render normally inside the client page.\n` +
-      `  • Move server-only work into a route loader (loader.ts) or action (action.ts) and pass the data down as props.\n` +
-      `  • Keep the page server-rendered (drop 'use client' on the page) and mark only the interactive leaf with 'use client'.`,
-    );
-  }
+  if (offender) throw toError(serverInClientDiagnostic(pageFile, offender, cwd));
 }
 
 const VALID_RUNTIMES = new Set(["bun", "edge", "node", "worker"]);
@@ -1839,11 +1861,12 @@ class RoutingFileError extends Error {
 }
 
 const warnedRouting = new Set();
-function warnRoutingFile(file, msg) {
-  const key = `${file}::${msg}`;
-  if (warnedRouting.has(key)) return;
-  warnedRouting.add(key);
-  process.stderr.write(`  ${paint("yellow", "⚠")} ${paint("dim", "[routing]")} ${msg}\n`);
+function warnRoutingFile(file, appRel) {
+  if (warnedRouting.has(file)) return;
+  warnedRouting.add(file);
+  const diagnostic = diagnose({ diagnostic: routingFileWarning(file, appRel, cwd) }, { cwd });
+  setIssue(`routing:${file}`, diagnostic);
+  logDiagnostic(diagnostic);
 }
 
 /** Warn when routing files are placed where the router will never find them
@@ -1854,23 +1877,17 @@ function validateRoutingConventions() {
   const appRel = relative(cwd, APP_DIR) || "app";
   const srcRoot = dirname(APP_DIR);
   const usesSrc = basename(APP_DIR) === "app" && basename(srcRoot) === "src";
-  const scan = (dir, label, allow = []) => {
+  const scan = (dir, allow = []) => {
     if (!existsSync(dir) || resolve(dir) === resolve(APP_DIR)) return;
     for (const name of names) {
       if (allow.includes(name)) continue;
       const f = findFile(dir, name);
-      if (f) {
-        warnRoutingFile(
-          f,
-          `"${name}" found in ${label} — routing files belong under "${appRel}/". ` +
-            `Move ${relative(cwd, f)} into ${appRel}/ (the router only scans there).`,
-        );
-      }
+      if (f) warnRoutingFile(f, appRel);
     }
   };
-  scan(cwd, "the project root");
+  scan(cwd);
   // proxy.ts is allowed to live at the src/ root (sibling of src/app).
-  if (usesSrc) scan(srcRoot, `"src/" (outside "app/")`, ["proxy"]);
+  if (usesSrc) scan(srcRoot, ["proxy"]);
 }
 
 // ── RFC 0001 route pipeline: config → schema → guard → loader/action ────────
@@ -2005,9 +2022,12 @@ async function readMergedConfig(chain, route) {
   const fromJson = loadGlobalConfig().runtime;
   let runtime = directive ?? config.runtime ?? fromJson ?? "bun";
   if (!VALID_RUNTIMES.has(runtime)) {
-    process.stderr.write(
-      `  ${paint("yellow", "⚠")} invalid runtime ${JSON.stringify(runtime)} — falling back to "bun"\n`,
-    );
+    const key = `runtime:${runtime}`;
+    if (!devIssues.has(key)) {
+      const diagnostic = diagnose({ diagnostic: invalidRuntimeWarning(runtime, [...VALID_RUNTIMES]) }, { cwd });
+      setIssue(key, diagnostic);
+      logDiagnostic(diagnostic);
+    }
     runtime = "bun";
   }
   config.runtime = runtime;
@@ -2030,16 +2050,7 @@ async function readMergedConfig(chain, route) {
     else if (explicitRuntime) reasons.push("a runtime set by config.ts / edge.ts / worker.ts");
     if (config.dynamic === true && !directive && !explicitRuntime) reasons.push("config.dynamic = true");
     if (collectRouteFiles(chain, "action").length) reasons.push("an action.ts (mutations are dynamic)");
-    if (reasons.length) {
-      const rel = route?.file ? relative(cwd, route.file) : "(route)";
-      throw new Error(
-        `Route '${rel}' is marked 'use static' but is dynamic: it has ${reasons.join(", ")}.\n\n` +
-          `A 'use static' route is prerendered and CDN-cached, so it can't use request-time features. Fix one:\n` +
-          `  • Remove 'use static' if the route really needs to be dynamic.\n` +
-          `  • Drop the runtime directive / dynamic config / action.ts so the route can be fully static.\n` +
-          `  • For periodic refresh, keep 'use static' and add a revalidate.ts (ISR), which stays static + cached.`,
-      );
-    }
+    if (reasons.length) throw toError(useStaticConflictDiagnostic(route?.file, reasons, cwd));
     config.dynamic = false;
     config.static = true;
   }
@@ -2473,7 +2484,7 @@ async function renderRoute(urlPath, req) {
       try { pageMod = await loadModuleFresh(route.file); } catch {}
     }
     if (!Page) {
-      return { status: 500, html: null, error: new Error(`page ${route.file} has no default export`) };
+      return { status: 500, html: null, error: toError(missingDefaultExportDiagnostic(route.file, cwd)), pageFile: route.file, segments };
     }
 
     const paramsProxy = new Proxy(route.params || {}, {
@@ -2542,7 +2553,7 @@ async function renderRoute(urlPath, req) {
       pipeline.config?.ppr ||
       pipeline.config?.experimental_ppr
     );
-    return { status: 200, html, metadata, error: null, clientPage, pageFile: route.file, layoutFiles: layouts.map((l) => l.file), notFoundFile, errorFile, loadingFile, segments, setCookies: pipeline.setCookies, actionData: pipeline.actionData, config: pipeline.config, revalidatePlan: pipeline.revalidatePlan, seoHead: pipeline.seoHead, serverState: pipeline.serverState, fullDocument, ppr: isPpr };
+    return { status: 200, html, metadata, error: null, clientPage, params: route.params, pageFile: route.file, layoutFiles: layouts.map((l) => l.file), notFoundFile, errorFile, loadingFile, segments, setCookies: pipeline.setCookies, actionData: pipeline.actionData, config: pipeline.config, revalidatePlan: pipeline.revalidatePlan, seoHead: pipeline.seoHead, serverState: pipeline.serverState, fullDocument, ppr: isPpr };
   } catch (err) {
     const rt = await routerRuntime();
     if (rt?.__setRouteContext) rt.__setRouteContext(null);
@@ -2620,7 +2631,7 @@ async function renderRoute(urlPath, req) {
         }
       } catch {}
     }
-    return { status: 500, html: null, error: err, segments, pageFile: route.file };
+    return { status: 500, html: null, error: err, segments, pageFile: route.file, layoutFiles: layouts.map((l) => l.file), errorFile };
   }
 }
 
@@ -2706,7 +2717,199 @@ async function renderNotFound(segments) {
 }
 
 function errorOverlayHTML(message, stack, extra) {
-  return renderErrorOverlay({ message, stack, ...(extra || {}) });
+  return renderErrorOverlay({ message, stack, cwd, ...(extra || {}) });
+}
+
+function renderDevError({ err, context, pathname, pageFile, layoutFiles, errorFile }) {
+  const diagnostic = logError(err, context, { pageFile, layoutFiles, errorFile });
+  if (pathname) setIssue(`render:${pathname}`, diagnostic);
+  broadcastHmr({ type: "error", message: diagnostic.title, diagnostic });
+  return renderErrorOverlay({ diagnostic, cwd });
+}
+
+function listAppRoutes() {
+  const routes = [];
+  const walk = (dir, segs) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && /^page\.(?:tsx|ts|jsx|js)$/.test(e.name))) routes.push(`/${segs.join("/")}`);
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith(".") || e.name.startsWith("@") || isPrivateDir(e.name)) continue;
+      if (e.name === "node_modules" || parseInterceptSegment(e.name)) continue;
+      const seg = /^\(.*\)$/.test(e.name) ? null : e.name.replace(/^%5F/i, "_");
+      walk(join(dir, e.name), seg ? [...segs, seg] : segs);
+    }
+  };
+  walk(APP_DIR, []);
+  return routes;
+}
+
+function notFoundOverlay(pathname) {
+  const spec = notFoundDiagnostic(pathname, { appDir: APP_DIR, routes: listAppRoutes(), cwd });
+  return renderErrorOverlay({ diagnostic: diagnose({ diagnostic: spec }, { cwd }), cwd });
+}
+
+const DEV_INFO_DISABLED = process.env.SWIFT_RUST_BUILD === "1";
+const RESTART_EXIT_CODE = 77;
+
+function routeFileTree(pageFile) {
+  if (!pageFile) return [];
+  const leaf = dirname(pageFile);
+  const rel = relative(APP_DIR, leaf);
+  const dirs = [APP_DIR];
+  if (rel && !rel.startsWith("..")) {
+    let cur = APP_DIR;
+    for (const part of rel.split(sep)) dirs.push((cur = join(cur, part)));
+  } else if (rel) {
+    dirs.push(leaf);
+  }
+  const out = [];
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const ext = extname(e.name);
+      if (!e.isFile() || !PAGE_EXTENSIONS.includes(ext)) continue;
+      const kind = e.name.slice(0, -ext.length);
+      if (kind === "page" ? dir !== leaf : !SPECIAL_FILES.has(kind)) continue;
+      out.push({ kind, file: relative(cwd, join(dir, e.name)).split(sep).join("/") });
+    }
+  }
+  return out;
+}
+
+function devInfoTag(pathname, renderResult, timings) {
+  if (DEV_INFO_DISABLED) return "";
+  const config = renderResult.config || {};
+  const params = renderResult.params || {};
+  const info = {
+    version: VERSION,
+    bun: typeof Bun !== "undefined" ? Bun.version : null,
+    route: pathname,
+    page: renderResult.pageFile ? relative(cwd, renderResult.pageFile).split(sep).join("/") : null,
+    files: routeFileTree(renderResult.pageFile),
+    runtime: config.runtime || "bun",
+    render: renderResult.ppr ? "ppr" : config.static ? "static" : config.dynamic || Object.keys(params).length ? "dynamic" : "static",
+    clientPage: Boolean(renderResult.clientPage),
+    params,
+    timings,
+    root: cwd,
+    appDir: relative(cwd, APP_DIR) || ".",
+    devIndicators: loadGlobalConfig().devIndicators ?? true,
+    supervised: process.env.SWIFT_RUST_SUPERVISED === "1",
+  };
+  return `<script type="application/json" id="__sr_dev_info">${JSON.stringify(info).replace(/</g, "\\u003c")}</script>`;
+}
+
+const GUI_EDITORS = [
+  ["cursor", "goto"],
+  ["code", "goto"],
+  ["windsurf", "goto"],
+  ["code-insiders", "goto"],
+  ["codium", "goto"],
+  ["zed", "colon"],
+  ["subl", "colon"],
+  ["webstorm", "jetbrains"],
+  ["idea", "jetbrains"],
+];
+const TERMINAL_EDITORS = new Set(["vi", "vim", "nvim", "nano", "emacs", "ed", "micro", "hx"]);
+
+function detectEditor() {
+  const configured = process.env.SWIFT_RUST_EDITOR || process.env.REACT_EDITOR || process.env.VISUAL || process.env.EDITOR;
+  if (configured) {
+    const bin = configured.trim().split(/\s+/)[0];
+    const name = basename(bin);
+    if (!TERMINAL_EDITORS.has(name)) {
+      return { bin, name, style: GUI_EDITORS.find(([n]) => n === name)?.[1] || "colon" };
+    }
+  }
+  const which = typeof Bun !== "undefined" && typeof Bun.which === "function" ? Bun.which : () => null;
+  for (const [name, style] of GUI_EDITORS) {
+    const bin = which(name);
+    if (bin) return { bin, name, style };
+  }
+  return null;
+}
+
+function openInEditor(file, line = 1, column = 1) {
+  if (!file) return { ok: false, error: "Missing file" };
+  const abs = resolve(cwd, file);
+  if (!(abs === cwd || abs.startsWith(`${cwd}${sep}`)) || !existsSync(abs)) {
+    return { ok: false, error: `Refusing to open ${file}: it is not a file inside the project` };
+  }
+  const editor = detectEditor();
+  const args = !editor
+    ? [abs]
+    : editor.style === "goto"
+      ? ["-g", `${abs}:${line}:${column}`]
+      : editor.style === "jetbrains"
+        ? ["--line", String(line), "--column", String(column), abs]
+        : [`${abs}:${line}:${column}`];
+  const bin = editor?.bin || (process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open");
+  try {
+    spawn(bin, args, { detached: true, stdio: "ignore" }).unref();
+    return { ok: true, editor: editor?.name || "the default app" };
+  } catch (err) {
+    return { ok: false, error: `Could not launch ${bin}: ${err.message}. Set SWIFT_RUST_EDITOR to your editor's command.` };
+  }
+}
+
+function clearAllCaches() {
+  buildGeneration++;
+  moduleCache.clear();
+  ssrBundleCache.clear();
+  componentIslandCache.clear();
+  islandBundleCache.clear();
+  pendingOverlayCache.clear();
+  lastCompiledAt.clear();
+  globalsCssCache = { file: null, mtime: 0, css: "" };
+  fontsScannedFromLayout = false;
+  GOOGLE_FONT_FAMILIES.clear();
+  const store = globalThis.__SR_CACHE__;
+  const purged = store?.store?.size || 0;
+  store?.store?.clear();
+  return purged;
+}
+
+async function devApi(method, url) {
+  const p = url.pathname;
+  if (p === "/_swift-rust/issues") return Response.json([...devIssues.values()]);
+  if (p === "/_swift-rust/open-editor") {
+    const result = openInEditor(
+      url.searchParams.get("file"),
+      Number(url.searchParams.get("line")) || 1,
+      Number(url.searchParams.get("column")) || 1,
+    );
+    return Response.json(result, { status: result.ok ? 200 : 400 });
+  }
+  if (p === "/_swift-rust/clear-cache") {
+    if (method !== "POST") return Response.json({ error: "use POST" }, { status: 405 });
+    const purged = clearAllCaches();
+    logLine([` ${paint("magenta", "↻")} ${paint("dim", "Caches cleared from the dev toolbar")}`]);
+    broadcastHmr({ type: "reload", reason: "cache-cleared", at: Date.now() });
+    return Response.json({ ok: true, purged });
+  }
+  if (p === "/_swift-rust/restart") {
+    if (method !== "POST") return Response.json({ error: "use POST" }, { status: 405 });
+    if (process.env.SWIFT_RUST_SUPERVISED !== "1") {
+      return Response.json(
+        { ok: false, error: "Restarting needs the swift-rust CLI. Start the server with `swift-rust dev`." },
+        { status: 409 },
+      );
+    }
+    logLine([`\n ${paint("yellow", "↻")} ${paint("bold", "Restarting dev server")} ${paint("dim", "(requested from the dev toolbar)")}\n`]);
+    setTimeout(() => process.exit(RESTART_EXIT_CODE), 50);
+    return Response.json({ ok: true });
+  }
+  return null;
 }
 
 // Metadata icon files looked up at the root of the app directory (app/ or
@@ -2843,8 +3046,10 @@ async function findSyntaxError(files) {
         break;
       } catch (err) {
         if (attempt >= 1) {
-          const msg = err?.message || String(err);
-          return `${relative(cwd, file)}: ${msg}`;
+          const first = err?.errors?.[0] ?? err;
+          const message = first?.message || String(first);
+          const position = first?.position ? { ...first.position, file } : { file, line: 1, column: 1, length: 0 };
+          return diagnose({ name: "SyntaxError", message, position }, { cwd, context: "while compiling" });
         }
         await new Promise((r) => setTimeout(r, 150));
       }
@@ -2930,10 +3135,14 @@ function setupWatcher() {
         // Overlay on the live page instead of reloading into a dead 500 —
         // page state survives, and the next clean save reloads normally.
         lastFlushErrored = true;
-        logLine([` ${paint("red", "✗")} ${paint("red", syntaxError.split("\n")[0])}`]);
-        broadcastHmr({ type: "error", message: syntaxError });
+        setIssue("syntax", syntaxError);
+        logDiagnostic(syntaxError);
+        broadcastHmr({ type: "error", message: syntaxError.title, diagnostic: syntaxError });
         return;
       }
+      clearIssue("syntax");
+      clearIssuesWithPrefix("render:");
+      clearIssuesWithPrefix("island:");
       if (lastFlushErrored) {
         lastFlushErrored = false;
         broadcastHmr({ type: "ok" });
@@ -3012,8 +3221,13 @@ function setupWatcher() {
 const networkUrls = [];
 async function detectNetworkUrls() {
   const { networkInterfaces } = await import("node:os");
-  const ifaces = networkInterfaces();
-  for (const [name, list] of Object.entries(ifaces)) {
+  let ifaces;
+  try {
+    ifaces = networkInterfaces();
+  } catch {
+    return;
+  }
+  for (const list of Object.values(ifaces)) {
     for (const iface of list || []) {
       if (iface.family === "IPv4" && !iface.internal) {
         networkUrls.push(`http://${iface.address}:${port}`);
@@ -3024,10 +3238,17 @@ async function detectNetworkUrls() {
 
 async function checkAppDir() {
   if (!existsSync(APP_DIR)) {
-    process.stdout.write(`\n  ${paint("red", "✗")} ${paint("bold", "No app/ directory found")}\n`);
-    process.stdout.write(`  ${paint("dim", `Create ${paint("cyan", "app/page.tsx")} to get started`)}\n\n`);
+    logDiagnostic(diagnose({ diagnostic: noAppDirDiagnostic(cwd) }, { cwd }));
     process.exit(1);
   }
+}
+
+function actionErrorResponse(spec) {
+  const diagnostic = logDiagnostic(diagnose({ diagnostic: spec }, { cwd, context: "while running a server action" }));
+  return Response.json(
+    { ok: false, error: diagnostic.title, code: diagnostic.code, help: diagnostic.helps?.map((h) => h.message) ?? [], docs: diagnostic.docs },
+    { status: 404 },
+  );
 }
 
 async function handleServerAction(req) {
@@ -3132,15 +3353,22 @@ async function handleServerAction(req) {
   }
 
   if (!targetFile) {
-    return Response.json({ ok: false, error: `Action module not found: ${filePart || actionId}` }, { status: 404 });
+    return actionErrorResponse({
+      code: "SR0048",
+      kind: "runtime",
+      title: `server action module ${"`"}${filePart || actionId}${"`"} not found`,
+      notes: [`looked in ${"`"}${relative(cwd, APP_DIR) || "."}${"`"}, ${"`"}src/${"`"} and the project root`],
+      helps: [
+        { message: "make sure the action id is `path/to/file#exportName`, relative to the project root" },
+        { message: "or put shared actions in `app/actions.ts`, which is used when no module is given" },
+      ],
+    });
   }
 
   try {
     const mod = await loadModuleFresh(targetFile);
     const fn = mod[exportName] || (exportName === "default" ? (mod.default ?? mod.action) : null);
-    if (typeof fn !== "function") {
-      return Response.json({ ok: false, error: `Action function '${exportName}' not found in ${relative(cwd, targetFile)}` }, { status: 404 });
-    }
+    if (typeof fn !== "function") return actionErrorResponse(serverActionNotFoundDiagnostic(exportName, targetFile, cwd));
 
     const result = formData ? await fn(formData) : await fn(...args);
 
@@ -3219,7 +3447,7 @@ async function handleRequest(req, res) {
 
   if (pathname === "/_swift-rust/info") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ version: VERSION, appDir: relative(cwd, APP_DIR), port, uptime: Date.now() - bootTime }));
+    res.end(JSON.stringify(devServerInfo()));
     return;
   }
 
@@ -3227,6 +3455,15 @@ async function handleRequest(req, res) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", version: VERSION }));
     return;
+  }
+
+  {
+    const api = await devApi(method, url);
+    if (api) {
+      res.writeHead(api.status, Object.fromEntries(api.headers));
+      res.end(await api.text());
+      return;
+    }
   }
 
   if (pathname === "/_swift-rust/action" || (req.method === "POST" && (req.headers["x-action-id"] || req.headers["next-action"]))) {
@@ -3257,7 +3494,7 @@ async function handleRequest(req, res) {
   if (pathname === "/_swift-rust/hmr-client.js") {
     const client = await tryHmrClient();
     if (client) {
-      res.writeHead(200, { "Content-Type": "application/javascript" });
+      res.writeHead(200, { "Content-Type": "application/javascript", "Cache-Control": "no-store" });
       res.end(client);
       return;
     }
@@ -3376,17 +3613,17 @@ async function handleRequest(req, res) {
       return;
     }
     if (compileResult.reason === "compile_error") {
-      const err = compileResult.error;
-      logError(err, `Failed to compile ${pathname}`);
+      const overlay = renderDevError({
+        err: compileResult.error,
+        context: `while compiling ${pathname}`,
+        pathname,
+        pageFile: compileResult.pageFile,
+        layoutFiles: compileResult.layoutFile ? [compileResult.layoutFile] : [],
+      });
       const total = performance.now() - reqStart;
       logRequest({ method, url: pathname, status: 500, duration: total, compileMs });
-      res.writeHead(500, { "Content-Type": "text/html" });
-      res.end(errorOverlayHTML(err?.message || "Compilation error", err?.stack || ""));
-      for (const send of hmrClients) {
-        try {
-          send(JSON.stringify({ event: "change", data: { type: "error", message: err?.message || "compile error" } }));
-        } catch {}
-      }
+      res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(overlay);
       return;
     }
   }
@@ -3397,28 +3634,67 @@ async function handleRequest(req, res) {
   const total = performance.now() - reqStart;
 
   if (renderResult.status === 500) {
-    logError(renderResult.error, `Failed to render ${pathname}`);
+    const overlay = renderDevError({
+      err: renderResult.error,
+      context: `while rendering ${pathname}`,
+      pathname,
+      pageFile: renderResult.pageFile,
+      layoutFiles: renderResult.layoutFiles,
+      errorFile: renderResult.errorFile,
+    });
     logRequest({ method, url: pathname, status: 500, duration: total, compileMs });
-    res.writeHead(500, { "Content-Type": "text/html" });
-    res.end(errorOverlayHTML(renderResult.error?.message || "Render error", renderResult.error?.stack || ""));
-    for (const send of hmrClients) {
-      try {
-        send(JSON.stringify({ event: "change", data: { type: "error", message: renderResult.error?.message || "render error" } }));
-      } catch {}
-    }
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(overlay);
     return;
   }
 
   if (renderResult.status === 404) {
     logRequest({ method, url: pathname, status: 404, duration: total, compileMs: 0 });
-    res.writeHead(404, { "Content-Type": "text/html" });
-    res.end(errorOverlayHTML("Not found", `No page found for ${pathname}`));
+    res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(notFoundOverlay(pathname));
     return;
   }
 
+  clearIssue(`render:${pathname}`);
   logRequest({ method, url: pathname, status: 200, duration: total, compileMs });
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(await wrapInDocumentAsync({ head: "", body: renderResult.html || "" }));
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Server-Timing": serverTiming({ compile: compileMs, render: renderMs, total }),
+  });
+  const doc = await wrapInDocumentAsync({ head: "", body: renderResult.html || "" });
+  res.end(doc.replace("</body>", `${devInfoTag(pathname, renderResult, { compile: compileMs, render: renderMs, total })}</body>`));
+}
+
+function islandErrorResponse(err, file, context) {
+  const diagnostic = logError(err, context, { pageFile: file });
+  setIssue(`island:${file}`, diagnostic);
+  broadcastHmr({ type: "error", message: diagnostic.title, diagnostic });
+  return new Response(`/* error[${diagnostic.code}]: ${String(diagnostic.title).replace(/\*\//g, "* /")} */`, {
+    status: 500,
+    headers: { "Content-Type": "application/javascript; charset=utf-8" },
+  });
+}
+
+function serverTiming({ compile, render, total }) {
+  return [
+    `compile;dur=${compile.toFixed(1)};desc="Compile"`,
+    `render;dur=${render.toFixed(1)};desc="Render"`,
+    `total;dur=${total.toFixed(1)};desc="Total"`,
+  ].join(", ");
+}
+
+function devServerInfo() {
+  return {
+    version: VERSION,
+    bun: typeof Bun !== "undefined" ? Bun.version : null,
+    appDir: relative(cwd, APP_DIR),
+    root: cwd,
+    port,
+    uptime: Date.now() - bootTime,
+    supervised: process.env.SWIFT_RUST_SUPERVISED === "1",
+    issues: devIssues.size,
+    devIndicators: loadGlobalConfig().devIndicators ?? true,
+  };
 }
 
 function serializeRobots(data) {
@@ -3540,11 +3816,16 @@ async function handleFetch(req) {
   }
 
   if (pathname === "/_swift-rust/info") {
-    return Response.json({ version: VERSION, appDir: relative(cwd, APP_DIR), port, uptime: Date.now() - bootTime });
+    return Response.json(devServerInfo());
   }
 
   if (pathname === "/_swift-rust/health") {
     return Response.json({ status: "ok", version: VERSION });
+  }
+
+  {
+    const api = await devApi(req.method, url);
+    if (api) return api;
   }
 
   if (pathname === "/_swift-rust/action" || (req.method === "POST" && (req.headers.get("x-action-id") || req.headers.get("next-action")))) {
@@ -3596,7 +3877,7 @@ async function handleFetch(req) {
   if (pathname === "/_swift-rust/hmr-client.js") {
     const client = await tryHmrClient();
     if (client) {
-      return new Response(client, { headers: { "Content-Type": "application/javascript" } });
+      return new Response(client, { headers: { "Content-Type": "application/javascript", "Cache-Control": "no-store" } });
     }
     return new Response("Not found", { status: 404 });
   }
@@ -3657,21 +3938,12 @@ async function handleFetch(req) {
     if (p && existsSync(p)) {
       try {
         const code = await buildIslandBundle(p);
+        clearIssue(`island:${p}`);
         return new Response(code, {
           headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" },
         });
       } catch (e) {
-        const relP = relative(cwd, p);
-        logError(e, `island bundle failed for ${relP}`);
-        const info = formatTerminalError(e, `island bundle failed for ${relP}`, cwd);
-        broadcastHmr({
-          type: "error",
-          message: `[${info.code}] ${info.title} (${relP}): ${info.message}\n💡 Solution: ${info.solution}`,
-        });
-        return new Response(`/* island build error: ${String(info.message).replace(/\*\//g, "* /")} */`, {
-          status: 500,
-          headers: { "Content-Type": "application/javascript; charset=utf-8" },
-        });
+        return islandErrorResponse(e, p, "while bundling the client page");
       }
     }
     return new Response("// island not found", { status: 404, headers: { "Content-Type": "application/javascript" } });
@@ -3683,21 +3955,12 @@ async function handleFetch(req) {
     if (p && existsSync(p)) {
       try {
         const code = await buildComponentIslandBundle(p);
+        clearIssue(`island:${p}`);
         return new Response(code, {
           headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" },
         });
       } catch (e) {
-        const relP = relative(cwd, p);
-        logError(e, `component island bundle failed for ${relP}`);
-        const info = formatTerminalError(e, `component island bundle failed for ${relP}`, cwd);
-        broadcastHmr({
-          type: "error",
-          message: `[${info.code}] ${info.title} (${relP}): ${info.message}\n💡 Solution: ${info.solution}`,
-        });
-        return new Response(`/* island build error: ${String(info.message).replace(/\*\//g, "* /")} */`, {
-          status: 500,
-          headers: { "Content-Type": "application/javascript; charset=utf-8" },
-        });
+        return islandErrorResponse(e, p, "while bundling the client component");
       }
     }
     return new Response("// island not found", { status: 404, headers: { "Content-Type": "application/javascript" } });
@@ -3848,23 +4111,22 @@ async function handleFetch(req) {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       }
-      return new Response(errorOverlayHTML("Not found", `No page found for ${pathname}`), {
+      return new Response(notFoundOverlay(pathname), {
         status: 404,
-        headers: { "Content-Type": "text/html" },
+        headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
     if (compileResult.reason === "compile_error") {
-      const err = compileResult.error;
-      logError(err, `Failed to compile ${pathname}`);
+      const overlay = renderDevError({
+        err: compileResult.error,
+        context: `while compiling ${pathname}`,
+        pathname,
+        pageFile: compileResult.pageFile,
+        layoutFiles: compileResult.layoutFile ? [compileResult.layoutFile] : [],
+      });
       const total = performance.now() - reqStart;
       logRequest({ method, url: pathname, status: 500, duration: total, compileMs });
-      const overlay = errorOverlayHTML(err?.message || "Compilation error", err?.stack || "");
-      for (const send of hmrClients) {
-        try {
-          send(JSON.stringify({ event: "change", data: { type: "error", message: err?.message || "compile error" } }));
-        } catch {}
-      }
-      return new Response(overlay, { status: 500, headers: { "Content-Type": "text/html" } });
+      return new Response(overlay, { status: 500, headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
   }
 
@@ -3874,15 +4136,16 @@ async function handleFetch(req) {
   const total = performance.now() - reqStart;
 
   if (renderResult.status === 500) {
-    logError(renderResult.error, `Failed to render ${pathname}`);
+    const overlay = renderDevError({
+      err: renderResult.error,
+      context: `while rendering ${pathname}`,
+      pathname,
+      pageFile: renderResult.pageFile,
+      layoutFiles: renderResult.layoutFiles,
+      errorFile: renderResult.errorFile,
+    });
     logRequest({ method, url: pathname, status: 500, duration: total, compileMs });
-    const overlay = errorOverlayHTML(renderResult.error?.message || "Render error", renderResult.error?.stack || "");
-    for (const send of hmrClients) {
-      try {
-        send(JSON.stringify({ event: "change", data: { type: "error", message: renderResult.error?.message || "render error" } }));
-      } catch {}
-    }
-    return new Response(overlay, { status: 500, headers: { "Content-Type": "text/html" } });
+    return new Response(overlay, { status: 500, headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
 
   if (renderResult.status === 404) {
@@ -3893,11 +4156,12 @@ async function handleFetch(req) {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
-    return new Response(errorOverlayHTML("Not found", `No page found for ${pathname}`), {
+    return new Response(notFoundOverlay(pathname), {
       status: 404,
-      headers: { "Content-Type": "text/html" },
+      headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
+  clearIssue(`render:${pathname}`);
 
   if (renderResult.redirect) {
     logRequest({ method, url: pathname, status: renderResult.status, duration: total, compileMs });
@@ -3966,17 +4230,20 @@ async function handleFetch(req) {
   // Setting cookies during render is the one dynamic signal we can catch at
   // runtime — fail loudly rather than silently shipping a wrong cache header.
   if (renderResult.config?.static && (renderResult.setCookies || []).length) {
-    const e = new Error(
-      "A 'use static' route set a cookie during render, which is a dynamic action. " +
-        "Remove 'use static' or stop setting cookies on this route.",
-    );
-    logError(e, "use static violation");
-    return new Response(errorOverlayHTML(e.message, e.stack || ""), {
+    const overlay = renderDevError({
+      err: toError(staticCookieDiagnostic(renderResult.pageFile, cwd)),
+      context: `while rendering ${pathname}`,
+      pathname,
+      pageFile: renderResult.pageFile,
+    });
+    return new Response(overlay, {
       status: 500,
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
-  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+  const timings = { compile: compileMs, render: renderMs, total: performance.now() - reqStart };
+  doc = doc.replace("</body>", `${devInfoTag(pathname, renderResult, timings)}</body>`);
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Server-Timing": serverTiming(timings) });
   for (const c of renderResult.setCookies || []) headers.append("Set-Cookie", c);
   // config.ts headers
   for (const [k, v] of Object.entries(renderResult.config?.headers || {})) headers.set(k, String(v));

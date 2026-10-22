@@ -16,6 +16,14 @@ const useNative = process.env.SWIFT_RUST_NATIVE === "1" || rawArgs.includes("--n
 const cleanArgs = rawArgs.filter((a) => a !== "--native");
 const cmd = cleanArgs[0] || "help";
 const rest = cleanArgs.slice(1);
+const RESTART_EXIT_CODE = 77;
+
+function cliError(code, title, help, command) {
+  const lines = [`error[${code}]: ${title}`];
+  if (help) lines.push(`  = help: ${help}`);
+  if (command) lines.push(`           ${command}`);
+  process.stderr.write(`${lines.join("\n")}\n`);
+}
 
 function findBun() {
   if (process.env.SWIFT_RUST_RUNTIME) return process.env.SWIFT_RUST_RUNTIME;
@@ -52,19 +60,23 @@ function checkBun(runtime) {
   return true;
 }
 
-async function runBunScript(script, args, command) {
+async function runBunScript(script, args, command, extraEnv = {}) {
   const runtime = findBun();
   if (!runtime) {
-    process.stderr.write(
-      `swift-rust ${command} requires Bun. Install Bun from https://bun.sh and make sure \`bun\` is on PATH.\n`,
+    cliError(
+      "SR0073",
+      `swift-rust ${command} requires Bun`,
+      "install Bun 1.3.0 or newer and make sure `bun` is on PATH",
+      "curl -fsSL https://bun.sh/install | bash",
     );
     return 1;
   }
   if (!checkBun(runtime)) return 1;
-  const env =
-    command === "build"
-      ? { ...process.env, NODE_ENV: process.env.NODE_ENV || "production" }
-      : process.env;
+  const env = {
+    ...process.env,
+    ...(command === "build" ? { NODE_ENV: process.env.NODE_ENV || "production" } : {}),
+    ...extraEnv,
+  };
   const child = spawn(runtime, [script, ...args], {
     stdio: "inherit",
     env,
@@ -72,9 +84,7 @@ async function runBunScript(script, args, command) {
   return await new Promise((resolveExit) => {
     child.on("exit", (code) => resolveExit(code ?? 1));
     child.on("error", (error) => {
-      process.stderr.write(
-        `swift-rust ${command}: could not start Bun at ${runtime} (${error.message}).\n`,
-      );
+      cliError("SR0005", `could not start Bun at ${runtime}`, error.message);
       resolveExit(1);
     });
   });
@@ -107,7 +117,7 @@ if (nativeBin && (useNative || cmd === "start")) {
   const code = await new Promise((r) => {
     child.on("exit", (c) => r(c ?? 1));
     child.on("error", (error) => {
-      process.stderr.write(`swift-rust: failed to start native binary ${nativeBin} (${error.message}).\n`);
+      cliError("SR0005", `failed to start native binary ${nativeBin}`, error.message);
       r(1);
     });
   });
@@ -115,8 +125,13 @@ if (nativeBin && (useNative || cmd === "start")) {
 }
 
 if (cmd === "dev") {
-  const code = await runBunScript(join(here, "dev-server.mjs"), process.argv.slice(3), "dev");
-  process.exit(code);
+  for (;;) {
+    const code = await runBunScript(join(here, "dev-server.mjs"), process.argv.slice(3), "dev", {
+      SWIFT_RUST_SUPERVISED: "1",
+    });
+    if (code !== RESTART_EXIT_CODE) process.exit(code ?? 1);
+    process.stdout.write("\n↻ Restarting dev server…\n\n");
+  }
 }
 
 if (cmd === "build") {
@@ -173,7 +188,7 @@ if (cmd === "upgrade" || cmd === "update") {
   };
 
   if (!existsSync(join(projectDir, "package.json"))) {
-    process.stderr.write("swift-rust upgrade: no package.json here — run this inside your project.\n");
+    cliError("SR0001", "no package.json in this directory", "run `swift-rust upgrade` inside the project you want to update");
     process.exit(1);
   }
 
@@ -186,7 +201,7 @@ if (cmd === "upgrade" || cmd === "update") {
   const code = await new Promise((r) => {
     child.on("exit", (c) => r(c ?? 1));
     child.on("error", (e) => {
-      process.stderr.write(`swift-rust upgrade: failed to run ${pm} (${e.message}).\n`);
+      cliError("SR0005", `failed to run ${pm}`, e.message);
       r(1);
     });
   });
@@ -213,7 +228,7 @@ function cargoRun() {
   return new Promise((resolveExit) => {
     child.on("exit", (c) => resolveExit(c ?? 1));
     child.on("error", (error) => {
-      process.stderr.write(`swift-rust: failed to start Cargo (${error.message}).\n`);
+      cliError("SR0005", "failed to start Cargo", `${error.message}. Install Rust, then run \`cargo build --release -p swift-rust\`.`);
       resolveExit(1);
     });
   });
@@ -225,7 +240,7 @@ if (bin) {
   const code = await new Promise((r) => {
     child.on("exit", (c) => r(c ?? 1));
     child.on("error", (error) => {
-      process.stderr.write(`swift-rust: failed to start ${bin} (${error.message}).\n`);
+      cliError("SR0005", `failed to start ${bin}`, error.message);
       r(1);
     });
   });
@@ -237,5 +252,10 @@ if (isMonorepo()) {
   process.exit(code);
 }
 
-process.stderr.write(`swift-rust: binary not found. In a monorepo, run \`cargo build --release -p swift-rust\`. In a published package, install should have placed the binary in native/<platform>/.\n`);
+cliError(
+  "SR0009",
+  "the swift-rust binary was not found",
+  "in a monorepo, build it; in an installed package, reinstall so native/<platform>/ is present",
+  "cargo build --release -p swift-rust",
+);
 process.exit(1);

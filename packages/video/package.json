@@ -3,10 +3,10 @@
   "version": "0.2.2",
   "description": "Video component for swift-rust. HTML5, YouTube, Vimeo, lightbox, and background-video modes.",
   "license": "MIT",
-  "homepage": "https://swift-rust.dev",
+  "homepage": "https://swift-rust.multivrs.space/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/colesites/swift-rust.git",
+    "url": "https://github.com/multivrs-space/swift-rust.git",
     "directory": "packages/video"
   },
   "type": "module",
@@ -41,6 +41,6 @@
     "access": "public"
   },
   "bugs": {
-    "url": "https://github.com/colesites/swift-rust/issues"
+    "url": "https://github.com/multivrs-space/swift-rust/issues"
   }
 }

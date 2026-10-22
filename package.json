@@ -4,10 +4,10 @@
   "private": true,
   "description": "The full-stack React framework powered with Rust + Bun. Inspired by Next.js. 10x faster.",
   "license": "MIT",
-  "homepage": "https://swift-rust.dev",
+  "homepage": "https://swift-rust.multivrs.space/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/colesites/swift-rust.git"
+    "url": "https://github.com/multivrs-space/swift-rust.git"
   },
   "workspaces": [
     "apps/*",

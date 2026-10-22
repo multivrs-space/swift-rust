@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
+import { diagnose, renderTerminal } from "./diagnostics.mjs";
 import { FRAMEWORK_VERSION } from "./runtime/framework-version.mjs";
 
 function escapeHtml(s) {
@@ -12,771 +12,269 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+function inlineCode(s) {
+  return escapeHtml(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
 /**
  * Unwraps Bun.build AggregateError (`err.errors`) or failed build `logs` into a
- * clear, human-readable Error with file/line/column metadata instead of generic
- * "Bundle failed".
+ * single Error that keeps every structured message (`items`) with its
+ * position, so diagnostics can point at the exact span instead of "Bundle failed".
  */
 export function normalizeBuildError(err, logs = [], cwd = process.cwd()) {
   const rawItems = [
     ...(Array.isArray(err?.errors) ? err.errors : []),
-    ...(Array.isArray(logs) ? logs : []),
+    ...(Array.isArray(logs) ? logs.filter((l) => !l?.level || l.level === "error") : []),
   ];
+  if (rawItems.length === 0 && err instanceof Error && err.message !== "Bundle failed") return err;
 
-  if (rawItems.length === 0 && err instanceof Error && err.message !== "Bundle failed") {
-    return err;
-  }
-
-  const formattedMessages = [];
-  let primaryFile = err?.file || null;
-  let primaryLine = err?.line || 0;
-  let primaryColumn = err?.column || 0;
-
-  for (const item of rawItems) {
-    const msg = item?.message || String(item);
-    const pos = item?.position;
-    if (pos?.file) {
-      const relFile = cwd ? relative(cwd, pos.file) : pos.file;
-      const loc = `${relFile}:${pos.line || 1}:${pos.column || 1}`;
-      formattedMessages.push(`${msg} (at ${loc})`);
-      if (!primaryFile) {
-        primaryFile = pos.file;
-        primaryLine = pos.line || 1;
-        primaryColumn = pos.column || 1;
-      }
-    } else {
-      formattedMessages.push(msg);
-    }
-  }
-
+  const items = rawItems.map((item) => ({
+    name: item?.name || item?.constructor?.name,
+    message: item?.message || String(item),
+    specifier: item?.specifier,
+    position: item?.position ? { ...item.position } : null,
+  }));
   const detail =
-    formattedMessages.filter(Boolean).join("\n") ||
+    items
+      .map((i) => (i.position?.file ? `${i.message} (at ${relative(cwd, i.position.file)}:${i.position.line || 1}:${i.position.column || 1})` : i.message))
+      .join("\n") ||
     (err?.message && err.message !== "Bundle failed" ? err.message : "Module bundling failed — check imports and syntax in this file.");
 
   const out = new Error(detail);
-  out.name = err?.name || "BuildError";
-  if (primaryFile) out.file = primaryFile;
-  if (primaryLine) out.line = primaryLine;
-  if (primaryColumn) out.column = primaryColumn;
+  out.name = items[0]?.name || err?.name || "BuildError";
+  out.items = items;
+  if (items[0]?.position) out.position = items[0].position;
+  if (items[0]?.specifier) out.specifier = items[0].specifier;
   if (err?.stack) out.stack = err.stack;
   return out;
 }
 
-export function classifyError(message, context = "") {
-  if (!message) {
-    return {
-      kind: "error",
-      code: "E0001",
-      title: "Unknown error",
-      explain: "An unexpected error occurred without a detail message.",
-      solution: "Check the terminal logs or reload the page.",
-      suggestions: ["Reload the page", "Restart `bun run dev`"],
-    };
-  }
-  const m = `${String(message)} ${String(context)}`;
-
-  if (/use server.*imported into.*use client|Server Component into a Client Component/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0404",
-      title: "Server module imported inside a Client Component",
-      explain:
-        "A file marked with `'use client'` runs in the browser and cannot directly import a `'use server'` component.",
-      solution:
-        "Move the server logic into a route `loader.ts` or `action.ts` file, or remove `'use client'` from the parent page and keep `'use client'` only on interactive leaf components.",
-      suggestions: [
-        "Pass server data down as props from a server page or `loader.ts`",
-        "For mutations, export an async function from `actions.ts` with `'use server'`",
-        "Remove `'use client'` from the page if only a child component needs interactivity",
-      ],
-    };
-  }
-
-  if (/use static.*dynamic|set a cookie during render/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0405",
-      title: "Static route used a dynamic feature",
-      explain:
-        "This route is marked `'use static'`, which guarantees build-time prerendering and CDN caching, so it cannot use request-time features like cookies, `action.ts`, or `'use node'`.",
-      solution:
-        "Remove `'use static'` from the top of the file if this page needs request-time data, or remove the dynamic feature (`cookies`, `action.ts`, runtime directive) to keep it static.",
-      suggestions: [
-        "Remove `'use static'` to allow dynamic request-time rendering",
-        "Use `revalidate.ts` (ISR) if you want static caching with periodic background updates",
-      ],
-    };
-  }
-
-  if (/Could not resolve|Cannot find module|Module not found/i.test(m)) {
-    const specMatch = String(message).match(/(?:Could not resolve|Cannot find module)[:\s]+['"]?([^'"\s\n)]+)/i);
-    const missingSpec = specMatch ? specMatch[1] : null;
-    const isRelative = missingSpec && (missingSpec.startsWith(".") || missingSpec.startsWith("@/"));
-    return {
-      kind: "compile",
-      code: "E0401",
-      title: missingSpec ? `Cannot find module "${missingSpec}"` : "Module not found",
-      explain: missingSpec
-        ? `The bundler tried to import "${missingSpec}", but no matching file or installed package was found.`
-        : "The compiler could not resolve an imported module or package.",
-      solution: isRelative
-        ? `Verify that "${missingSpec}" exists and check the file name spelling/case.`
-        : missingSpec
-          ? `Install the missing package with \`bun add ${missingSpec}\` (or run \`bun run build\` if it is a workspace package).`
-          : "Check the import path spelling or run `bun install` to install missing packages.",
-      suggestions: [
-        isRelative
-          ? `Check that the file "${missingSpec}" exists (.tsx, .ts, .js)`
-          : `Run \`bun install\` or \`bun add ${missingSpec || "<package>"}\``,
-        "If importing a monorepo package (like `swift-rust`), run `bun run build` so `dist/` is up to date",
-        "Verify `tsconfig.json` path aliases (e.g. `@/*` -> `./src/*`)",
-      ],
-    };
-  }
-
-  if (/Cannot declare.*twice|already been declared|SyntaxError|Unexpected token|Expected/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0401",
-      title: "Syntax or duplicate declaration error",
-      explain:
-        "The file contains invalid TypeScript/JSX syntax or declares the same variable/import name twice in the same scope.",
-      solution:
-        "Check the highlighted line below for a duplicate identifier, unclosed JSX tag, or missing bracket.",
-      suggestions: [
-        "Rename or remove the duplicate import/variable declaration",
-        "Check for unclosed JSX tags, missing parentheses, or stray characters",
-        "Run `bun run typecheck` to see full TypeScript diagnostics",
-      ],
-    };
-  }
-
-  if (/is not defined|has no exported member|export.*not found|does not provide an export named/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0402",
-      title: "Missing export or undefined symbol",
-      explain:
-        "You are importing or referencing a name that does not exist in the target module or current scope.",
-      solution:
-        "Check whether the component uses a named export (`import { X }`) vs. a default export (`import X`), and make sure it is exported from the source file.",
-      suggestions: [
-        "Switch between `import { Name } from '...'` and `import Name from '...'`",
-        "Open the target module and confirm `export function ...` or `export const ...` is present",
-        "If using a React hook (`useState`, `useEffect`), add `import { useState } from 'react'`",
-      ],
-    };
-  }
-
-  if (/TypeError.*is not a function|has no default export/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0402",
-      title: "Invalid component or function export",
-      explain:
-        "A page, layout, or component was called as a function, but the imported value is `undefined` or an object.",
-      solution:
-        "Ensure your `page.tsx` or `layout.tsx` has `export default function Page() { ... }` and that all imported components match their export style.",
-      suggestions: [
-        "Add `export default function Page()` to your route's `page.tsx`",
-        "Verify named vs. default imports for components used on this page",
-      ],
-    };
-  }
-
-  if (/island bundle failed|Bundle failed/i.test(m)) {
-    return {
-      kind: "compile",
-      code: "E0403",
-      title: "Client island bundle failed",
-      explain:
-        "The browser bundler could not package this `'use client'` component and its imports for client-side hydration.",
-      solution:
-        "Make sure all imports inside this `'use client'` file are browser-compatible (no `node:fs` or server-only modules) and that workspace packages are built (`bun run build`).",
-      suggestions: [
-        "Remove any Node-only imports (`node:fs`, `node:child_process`, database clients) from `'use client'` files",
-        "Run `bun run build` if a workspace package's `dist/` folder was recently cleaned",
-        "Move server-only code into `loader.ts` or `actions.ts`",
-      ],
-    };
-  }
-
-  if (/Failed to fetch|FetchError|NetworkError|ENOTFOUND|ECONNREFUSED/i.test(m)) {
-    return {
-      kind: "runtime",
-      code: "E0901",
-      title: "Network request failed",
-      explain:
-        "A `fetch()` call to an external URL or API failed because the server could not be reached.",
-      solution:
-        "Verify the API URL is running and reachable, and check your `.env` variables.",
-      suggestions: [
-        "Verify the URL protocol (`http://` vs `https://`), host, and port",
-        "If calling a local backend service, confirm it is running",
-        "Wrap external `fetch()` calls in `try / catch` to render a graceful fallback",
-      ],
-    };
-  }
-
-  if (/notFound\(\)|NEXT_NOT_FOUND|NOT_FOUND/i.test(m)) {
-    return {
-      kind: "notFound",
-      code: "E1404",
-      title: "Page or resource not found (404)",
-      explain:
-        "No matching route `page.tsx` was found for this URL, or `notFound()` was called during rendering.",
-      solution:
-        "Create an `app/<segment>/page.tsx` file for this URL, or add a custom `app/not-found.tsx` boundary.",
-      suggestions: [
-        "Check the URL spelling in the address bar",
-        "Create `src/app/<route>/page.tsx` with `export default function Page()`",
-        "Add `src/app/not-found.tsx` to customize the 404 page",
-      ],
-    };
-  }
-
-  if (/redirect/i.test(m)) {
-    return {
-      kind: "redirect",
-      code: "E1301",
-      title: "Redirect triggered",
-      explain:
-        "A `redirect()` call interrupted rendering to send the browser to another URL.",
-      solution:
-        "No action needed if this redirect is intentional; otherwise check the `redirect()` condition in your page, loader, or guard.",
-      suggestions: [
-        "Check `guard.ts`, `loader.ts`, or `page.tsx` for `redirect('/...')` calls",
-      ],
-    };
-  }
-
-  if (/hydration|Text content does not match|There was an error while hydrating/i.test(m)) {
-    return {
-      kind: "runtime",
-      code: "E0501",
-      title: "React hydration mismatch",
-      explain:
-        "The HTML rendered on the server did not match the first render in the browser.",
-      solution:
-        "Move browser-only or random values (`window`, `localStorage`, `Date.now()`, `Math.random()`) inside a `useEffect(...)` hook.",
-      suggestions: [
-        "Do not branch on `typeof window !== 'undefined'` directly inside JSX return output",
-        "Use `useEffect` + `useState` for client-only values like timestamps or `localStorage`",
-        "Ensure invalid HTML nesting (e.g. `<p>` inside `<p>` or `<div>` inside `<p>`) is fixed",
-      ],
-    };
-  }
-
-  if (/ENOSPC|EACCES|EADDRINUSE|EADDRNOTAVAIL|port.*already|port.*in use/i.test(m)) {
-    return {
-      kind: "system",
-      code: "E0002",
-      title: "Server port or system resource error",
-      explain:
-        "The server could not bind to the requested port or ran out of disk/file-watcher resources.",
-      solution:
-        "Run with `--port 3211` (or kill the existing process on port 3210 with `lsof -ti:3210 | xargs kill -9`).",
-      suggestions: [
-        "Free the port: `lsof -ti:3210 | xargs kill -9`",
-        "Or start on another port: `bun swift-rust dev --port 3211`",
-      ],
-    };
-  }
-
+/** rustc-style terminal block for any error (compat wrapper over `diagnose`). */
+export function formatTerminalError(err, context = "Error", cwd = process.cwd(), paint = (_c, s) => s, extra = {}) {
+  const cleanContext = context ? context.replace(`${cwd}/`, "") : null;
+  const diagnostic = err?.code && err?.title && err?.helps ? err : diagnose(err, { cwd, context: cleanContext, ...extra });
+  const solution = diagnostic.helps[0]?.message || "";
   return {
-    kind: "error",
-    code: "E0001",
-    title: "Runtime error while rendering",
-    explain:
-      "An unhandled exception was thrown while executing your component, loader, or route handler.",
-    solution:
-      "Check the highlighted source line below and guard against `undefined` / `null` values before accessing properties.",
-    suggestions: [
-      "Inspect the source frame below to see the exact line that threw",
-      "Use optional chaining (`obj?.prop`) if data can be undefined",
-      "Add an `error.tsx` boundary in this route folder to handle runtime errors gracefully",
-    ],
+    formatted: renderTerminal(diagnostic, paint),
+    code: diagnostic.code,
+    title: diagnostic.title,
+    message: String(diagnostic.message || "").replaceAll(`${cwd}/`, ""),
+    solution,
+    diagnostic,
   };
 }
 
-function extractLocation(err) {
-  if (!err) return null;
-  if (err.file && err.line) {
-    return {
-      file: err.file,
-      line: Number(err.line) || 1,
-      column: Number(err.column) || 1,
-    };
-  }
-  const combined = `${err.message || ""}\n${err.stack || ""}`;
-  const patterns = [
-    /\(at\s+([^():\n]+?\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)\)/,
-    /at\s+.*?\s+\(([^()]+?\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)\)/,
-    /at\s+([^\s()]+\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)/,
-    /([^()\s\n]+\.(?:tsx?|jsx?|mjs|js)):(\d+):(\d+)/,
-  ];
-  for (const p of patterns) {
-    const m = combined.match(p);
-    if (m && !m[1].includes("bin/dev-server.mjs") && !m[1].includes("bin/error-overlay.mjs")) {
-      return {
-        file: m[1],
-        line: parseInt(m[2] || "0", 10),
-        column: parseInt(m[3] || "0", 10),
-      };
+function frameHtml(d) {
+  if (!d.frame) return "";
+  const { start, lines } = d.frame;
+  const width = String(start + lines.length - 1).length;
+  const rows = lines.map((text, i) => {
+    const n = start + i;
+    const target = n === d.location?.line;
+    let row = `<div class="ln${target ? " is-target" : ""}"><span class="gutter">${String(n).padStart(width)}</span><span class="src">${escapeHtml(text) || " "}</span></div>`;
+    if (target) {
+      const col = Math.max(1, d.location.column);
+      const prefix = String(text).slice(0, col - 1).replace(/\S/g, " ");
+      const carets = "^".repeat(Math.max(1, d.location.length || 1));
+      row += `<div class="ln caret-row"><span class="gutter">${" ".repeat(width)}</span><span class="src">${escapeHtml(prefix)}<span class="caret">${carets}</span>${d.label ? ` <span class="caret-label">${inlineCode(d.label)}</span>` : ""}</span></div>`;
     }
-  }
-  if (err.lineNumber) {
-    return { file: err.fileName || "<unknown>", line: err.lineNumber, column: err.columnNumber || 0 };
-  }
-  return null;
+    return row;
+  });
+  return `<pre class="frame">${rows.join("")}</pre>`;
 }
+
+function diffHtml(h) {
+  if (!h.diff) return "";
+  const width = String(Math.max(...h.diff.map((l) => l.n))).length;
+  const rows = h.diff.map((l) => {
+    const [a, b] = l.mark || [0, 0];
+    const body = `${escapeHtml(l.text.slice(0, a))}<mark>${escapeHtml(l.text.slice(a, b))}</mark>${escapeHtml(l.text.slice(b))}`;
+    return `<div class="dl ${l.type === "+" ? "add" : "del"}"><span class="gutter">${String(l.n).padStart(width)}</span><span class="sign">${l.type}</span><span class="src">${body || " "}</span></div>`;
+  });
+  return `<pre class="diff">${rows.join("")}</pre>`;
+}
+
+function helpHtml(h, i, d) {
+  const file = h.file && h.file !== d.location?.file ? ` <span class="muted">in ${escapeHtml(h.file)}</span>` : "";
+  const copy = h.command || h.snippet || (h.diff ? h.diff.filter((l) => l.type === "+").map((l) => l.text).join("\n") : "");
+  return `<div class="help">
+    <div class="help-head"><span class="tag help-tag">help</span><span class="help-msg">${inlineCode(h.message)}${file}</span>${copy ? `<button class="mini" data-copy="${escapeHtml(copy)}">Copy</button>` : ""}</div>
+    ${diffHtml(h)}
+    ${h.command ? `<pre class="cmd"><span class="muted">$</span> ${escapeHtml(h.command)}</pre>` : ""}
+    ${h.snippet ? `<pre class="snippet">${escapeHtml(h.snippet)}</pre>` : ""}
+  </div>`;
+}
+
+function stackHtml(d) {
+  if (!d.stack) return "";
+  const rows = d.stack
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      const m = l.trim().match(/^at (?:(.+?) \()?(.+?):(\d+):(\d+)\)?$/);
+      if (!m) return `<div class="frame-row head">${escapeHtml(l.trim())}</div>`;
+      const vendor = /node_modules|swift-rust[\\/](?:packages[\\/]swift-rust[\\/])?bin|^node:|native/.test(m[2]);
+      return `<div class="frame-row${vendor ? " vendor" : ""}"><span class="fn">${escapeHtml(m[1] || "<anonymous>")}</span>${
+        vendor
+          ? `<span class="muted">${escapeHtml(m[2])}:${m[3]}</span>`
+          : `<button class="link" data-open="${escapeHtml(m[2])}" data-line="${m[3]}" data-col="${m[4]}">${escapeHtml(m[2])}:${m[3]}:${m[4]}</button>`
+      }</div>`;
+    });
+  return `<details class="stack"><summary>Call stack</summary><div class="frames">${rows.join("")}</div></details>`;
+}
+
+const KIND_LABEL = {
+  compile: ["Build error", "#f59e0b"],
+  runtime: ["Runtime error", "#ef4444"],
+  system: ["System error", "#f97316"],
+  routing: ["Routing error", "#a78bfa"],
+  config: ["Config error", "#38bdf8"],
+  notFound: ["Not found", "#a3a3a3"],
+};
 
 /**
- * Formats a clear, structured terminal error block with:
- *   - Error code + title
- *   - Plain-English explanation ("Why")
- *   - Exact file:line:col + code snippet
- *   - Actionable "Solution"
+ * Full-page dev error overlay.
+ * @param {{ error?: unknown; diagnostic?: object; message?: string; stack?: string; context?: string; file?: string; line?: number; column?: number; kind?: string; cwd?: string; pageFile?: string; layoutFiles?: string[]; errorFile?: string }} [params]
  */
-export function formatTerminalError(err, context = "Error", cwd = process.cwd(), paint = (_c, s) => s) {
-  const normalized = normalizeBuildError(err, [], cwd);
-  const rawMsg = normalized?.message || String(err || "Unknown error");
-  const cleanContext = context ? context.replace(cwd + "/", "") : "Error";
-  const cls = classifyError(rawMsg, cleanContext);
-  const loc = extractLocation(normalized);
-
-  const lines = [];
-  lines.push(
-    ` ${paint("red", "✗")} ${paint("bold", `[${cls.code}] ${cls.title}`)} ${paint("dim", `(${cleanContext})`)}`,
-  );
-
-  for (const msgLine of rawMsg.split("\n").slice(0, 6)) {
-    const trimmed = msgLine.replaceAll(cwd + "/", "").trim();
-    if (trimmed) {
-      lines.push(`│  ${paint("red", trimmed)}`);
-    }
+export function errorOverlayHTML(params = {}) {
+  const cwd = params.cwd || process.cwd();
+  let d = params.diagnostic;
+  if (!d) {
+    const source =
+      params.error ??
+      Object.assign(new Error(params.message || "An unexpected error occurred"), {
+        stack: params.stack || undefined,
+        file: params.file,
+        line: params.line,
+        column: params.column,
+      });
+    d = diagnose(source, { cwd, context: params.context, pageFile: params.pageFile, layoutFiles: params.layoutFiles, errorFile: params.errorFile });
   }
-
-  if (loc?.file) {
-    const absFile = existsSync(loc.file) ? loc.file : cwd ? `${cwd}/${loc.file}` : loc.file;
-    const relFile = cwd ? relative(cwd, absFile) : loc.file;
-    lines.push(`│`);
-    lines.push(`│  ${paint("dim", "Location:")} ${paint("cyan", `${relFile}:${loc.line}:${loc.column || 1}`)}`);
-    const snippet = readFileLines(absFile, loc.line, 2);
-    if (snippet && snippet.length > 0) {
-      const width = String(snippet[snippet.length - 1].number).length;
-      for (const s of snippet) {
-        const num = String(s.number).padStart(width, " ");
-        if (s.number === loc.line) {
-          lines.push(`│  ${paint("red", `▶ ${num}`)} ${paint("dim", "│")} ${s.text}`);
-        } else {
-          lines.push(`│    ${paint("dim", `${num} │ ${s.text}`)}`);
-        }
-      }
-    }
-  }
-
-  lines.push(`│`);
-  lines.push(`│  ${paint("yellow", "💡 Solution:")} ${cls.solution || cls.suggestions?.[0] || "Check the error details above."}`);
-  if (cls.suggestions && cls.suggestions.length > 1) {
-    for (const tip of cls.suggestions.slice(1, 3)) {
-      lines.push(`│     ${paint("dim", `• ${tip}`)}`);
-    }
-  }
-
-  return {
-    formatted: lines.join("\n"),
-    code: cls.code,
-    title: cls.title,
-    message: rawMsg.replaceAll(cwd + "/", ""),
-    solution: cls.solution || cls.suggestions?.[0] || "",
-  };
-}
-
-function readFileLines(filePath, targetLine, context = 3) {
-  try {
-    if (!existsSync(filePath)) return null;
-    const text = readFileSync(filePath, "utf8");
-    const lines = text.split("\n");
-    const start = Math.max(0, targetLine - 1 - context);
-    const end = Math.min(lines.length, targetLine + context);
-    const out = [];
-    for (let i = start; i < end; i++) {
-      out.push({ number: i + 1, text: lines[i] });
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-
-function codeFrame(filePath, line, column, context = 3) {
-  if (!filePath || !line) return "";
-  const lines = readFileLines(filePath, line, context);
-  if (!lines || lines.length === 0) return "";
-  const maxWidth = String(lines[lines.length - 1].number).length;
-  const out = [];
-  out.push(
-    `  <div class="frame-title"><span class="frame-file">${escapeHtml(filePath)}</span>:<span class="frame-line">${line}:${column || 1}</span></div>`,
-  );
-  out.push(`  <pre class="frame">`);
-  for (const l of lines) {
-    const isTarget = l.number === line;
-    const gutter = String(l.number).padStart(maxWidth, " ");
-    const marker = isTarget ? "▶" : " ";
-    out.push(
-      `<span class="frame-line${isTarget ? " is-target" : ""}"><span class="frame-gutter">${gutter} ${marker}</span><span class="frame-source">${escapeHtml(l.text || " ")}</span></span>`,
-    );
-  }
-  if (column && column > 0) {
-    out.push(
-      `<span class="frame-caret">${" ".repeat(maxWidth + 2)}<span class="caret">${" ".repeat(Math.max(0, column - 1))}^</span></span>`,
-    );
-  }
-  out.push(`  </pre>`);
-  return out.join("\n");
-}
-
-function getExplainable({ code, title, kind }) {
-  return {
-    code,
-    title,
-    intro: kind === "notFound" ? "Not Found" : kind === "redirect" ? "Redirect" : "Something went wrong",
-  };
-}
-
-/**
- * @param {{ message?: string; stack?: string; hint?: string; file?: string; line?: number; column?: number; kind?: string }} [params]
- * @returns {string}
- */
-export function errorOverlayHTML({ message, stack, hint, file, line, column, kind } = {}) {
-  const errMsg = message || "An unexpected error occurred";
-  const cls = classifyError(errMsg);
-  const finalKind = kind || cls.kind;
-  const finalCode = cls.code;
-  const finalTitle = cls.title;
-  const explain = cls.explain;
-  const solution = cls.solution || hint || cls.suggestions?.[0] || "";
-  const suggestions = cls.suggestions || [];
-
-  const location = extractLocation({ message: errMsg, stack, file, line, column });
-  const finalFile = file || location?.file;
-  const finalLine = line || location?.line || 0;
-  const finalColumn = column || location?.column || 0;
-  const frame = finalFile ? codeFrame(finalFile, finalLine, finalColumn) : "";
-
-  const headerIcon = finalKind === "notFound" ? "🔍" : finalKind === "redirect" ? "↪️" : finalKind === "compile" ? "⚙️" : "✕";
-
-  const headerLabel =
-    finalKind === "notFound"
-      ? "NOT FOUND"
-      : finalKind === "redirect"
-        ? "REDIRECT"
-        : finalKind === "compile"
-          ? "COMPILER"
-          : finalKind === "system"
-            ? "SYSTEM"
-            : "ERROR";
-
-  const headerColor =
-    finalKind === "notFound"
-      ? "#a3a3a3"
-      : finalKind === "redirect"
-        ? "#60a5fa"
-        : finalKind === "compile"
-          ? "#f59e0b"
-          : finalKind === "system"
-            ? "#f97316"
-            : "#ef4444";
+  const kind = params.kind || d.kind;
+  const [kindLabel, color] = KIND_LABEL[kind] || KIND_LABEL.runtime;
+  const sev = d.severity === "warning" ? "warning" : "error";
+  const rawMessage = String(d.message || "").trim();
+  const showRaw = rawMessage && rawMessage.toLowerCase() !== String(d.title).replace(/`/g, "").toLowerCase();
+  const json = JSON.stringify(d).replace(/</g, "\\u003c");
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-sr-error-page>
 <head>
 <meta charset="utf-8" />
-<title>Swift Rust · ${escapeHtml(finalCode)} ${escapeHtml(finalTitle)}</title>
+<title>${escapeHtml(`${sev}${d.code ? `[${d.code}]` : ""}: ${String(d.title).replace(/`/g, "")}`)} · Swift Rust</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   *, *::before, *::after { box-sizing: border-box; }
-  :root {
-    color-scheme: dark;
-  }
+  :root { color-scheme: dark; --accent: ${color}; }
   html, body { margin: 0; padding: 0; }
-  body {
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", sans-serif;
-    background: #09090b;
-    color: #e4e4e7;
-    min-height: 100vh;
-    font-size: 14px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace; }
-
-  .page { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
-  .topbar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding-bottom: 20px; margin-bottom: 32px;
-    border-bottom: 1px solid #27272a;
-  }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
-  .brand-mark {
-    width: 22px; height: 22px; border-radius: 5px;
-    background: linear-gradient(135deg, #0070f3 0%, #7c3aed 50%, #ec4899 100%);
-  }
-  .brand-name { font-size: 14px; }
-  .topbar-right { font-size: 12px; color: #71717a; }
-
-  .card {
-    background: #0c0c0d;
-    border: 1px solid #27272a;
-    border-radius: 12px;
-    overflow: hidden;
-    margin-bottom: 16px;
-  }
-  .card-head {
-    padding: 14px 20px;
-    display: flex; align-items: center; gap: 12px;
-    background: #111113;
-    border-bottom: 1px solid #27272a;
-  }
-  .card-head .code-badge {
-    font-family: ui-monospace, "JetBrains Mono", monospace;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
-    background: #1f1f23; color: #e4e4e7;
-    padding: 3px 8px; border-radius: 4px;
-  }
-  .card-head .icon { font-size: 16px; line-height: 1; }
-  .card-head .title { font-size: 14px; font-weight: 600; color: #e4e4e7; }
-  .card-head .kind {
-    margin-left: auto;
-    font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
-    color: ${headerColor};
-    background: ${headerColor}1A;
-    border: 1px solid ${headerColor}33;
-    padding: 3px 8px; border-radius: 4px;
-  }
-  .card-body { padding: 20px; }
-
-  .lede {
-    font-size: 16px; font-weight: 500;
-    color: #fafafa;
-    margin-bottom: 16px; line-height: 1.5;
-  }
-  .lede .err-code {
-    font-family: ui-monospace, "JetBrains Mono", monospace;
-    font-size: 12px;
-    background: ${headerColor}1A;
-    color: ${headerColor};
-    padding: 2px 6px;
-    border-radius: 3px;
-    margin-right: 8px;
-    font-weight: 600;
-  }
-  .explain {
-    color: #a1a1aa;
-    margin-bottom: 16px;
-    font-size: 14px;
-  }
-  .section-label {
-    font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
-    color: #71717a; text-transform: uppercase;
-    margin: 20px 0 10px;
-  }
-  .suggestions {
-    list-style: none; padding: 0; margin: 0;
-    border: 1px solid #27272a; border-radius: 8px;
-    overflow: hidden;
-  }
-  .suggestions li {
-    padding: 10px 14px;
-    font-size: 13px;
-    color: #d4d4d8;
-    background: #111113;
-    border-top: 1px solid #27272a;
-    display: flex; align-items: flex-start; gap: 10px;
-  }
-  .suggestions li:first-child { border-top: 0; }
-  .suggestions li::before {
-    content: "→";
-    color: #60a5fa;
-    font-weight: 600;
-    flex-shrink: 0;
-  }
-
-  .frame {
-    background: #000;
-    border: 1px solid #27272a;
-    border-radius: 8px;
-    padding: 14px 16px;
-    overflow-x: auto;
-    font-size: 12.5px; line-height: 1.6;
-    margin: 0;
-  }
-  .frame-title {
-    font-family: ui-monospace, "JetBrains Mono", monospace;
-    font-size: 12px;
-    color: #71717a;
-    margin-bottom: 8px;
-    display: flex; align-items: center; gap: 4px;
-  }
-  .frame-file { color: #a1a1aa; }
-  .frame-line { color: #71717a; }
-  .frame-line { display: block; white-space: pre; }
-  .frame-gutter { color: #3f3f46; user-select: none; margin-right: 12px; }
-  .frame-line.is-target .frame-source { color: #fafafa; }
-  .frame-line.is-target .frame-gutter { color: #ef4444; }
-  .frame-caret { display: block; white-space: pre; color: #ef4444; }
-  .caret { background: #ef444433; color: #ef4444; }
-
-  .stack-wrap { margin-top: 12px; }
-  details summary {
-    cursor: pointer;
-    color: #a1a1aa;
-    font-size: 12px;
-    padding: 8px 0;
-    user-select: none;
-    font-weight: 500;
-  }
-  details summary:hover { color: #e4e4e7; }
-  details[open] summary { color: #fafafa; }
-  pre.stack {
-    background: #000;
-    border: 1px solid #27272a;
-    border-radius: 8px;
-    padding: 14px 16px;
-    overflow-x: auto;
-    font-size: 12px; line-height: 1.6;
-    color: #a1a1aa;
-    margin: 0;
-    max-height: 320px;
-  }
-
-  .hint {
-    background: #1e1b4b;
-    border: 1px solid #4338ca;
-    color: #c7d2fe;
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    margin-bottom: 16px;
-  }
-
-  .solution-box {
-    background: rgba(16, 185, 129, 0.08);
-    border: 1px solid rgba(16, 185, 129, 0.35);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
-  }
-  .solution-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: #34d399;
-    margin-bottom: 4px;
-  }
-  .solution-text {
-    font-size: 13.5px;
-    color: #ecfdf5;
-    line-height: 1.5;
-  }
-
+  body { font: 14px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; background: radial-gradient(1200px 500px at 10% -10%, ${color}14, transparent 60%), #09090b; color: #e4e4e7; min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  code, pre, .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+  code { background: #ffffff10; border: 1px solid #ffffff14; padding: 0 5px; border-radius: 4px; font-size: .92em; color: #fafafa; }
+  .page { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; }
+  .brand svg { width: 26px; height: 26px; }
+  .muted { color: #71717a; }
+  kbd { background: #18181b; border: 1px solid #27272a; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, monospace; color: #a1a1aa; }
+  .card { background: #0c0c0eee; border: 1px solid #27272a; border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px -40px #000; }
+  .head { padding: 22px 24px 18px; border-bottom: 1px solid #1f1f23; position: relative; }
+  .head::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+  .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tag { font: 600 11px/1 ui-monospace, monospace; padding: 4px 7px; border-radius: 5px; letter-spacing: .02em; }
+  .sev { color: ${sev === "warning" ? "#facc15" : "#f87171"}; background: ${sev === "warning" ? "#facc1514" : "#f8717114"}; border: 1px solid ${sev === "warning" ? "#facc1533" : "#f8717133"}; }
+  .kind { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); font-family: inherit; text-transform: uppercase; }
+  .ctx { font-size: 12px; color: #71717a; }
+  .spacer { flex: 1; }
+  h1 { margin: 0; font-size: 19px; line-height: 1.4; font-weight: 600; color: #fafafa; letter-spacing: -.01em; }
+  h1 code { font-size: .9em; }
+  .body { padding: 20px 24px 24px; }
+  .loc { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; font: 12px ui-monospace, monospace; color: #a1a1aa; }
+  .loc .arrow { color: #60a5fa; }
+  pre.frame, pre.diff, pre.cmd, pre.snippet, .frames { margin: 0; background: #050506; border: 1px solid #1f1f23; border-radius: 10px; padding: 12px 0; overflow-x: auto; font-size: 12.5px; line-height: 1.65; }
+  pre.cmd, pre.snippet { padding: 10px 14px; color: #d4d4d8; }
+  .ln, .dl { display: flex; white-space: pre; padding: 0 14px; }
+  .ln .src { color: #a1a1aa; }
+  .ln.is-target { background: #ef44440f; }
+  .ln.is-target .src { color: #fafafa; }
+  .gutter { color: #3f3f46; user-select: none; padding-right: 14px; text-align: right; min-width: 2ch; }
+  .ln.is-target .gutter { color: #f87171; }
+  .caret { color: ${sev === "warning" ? "#facc15" : "#f87171"}; font-weight: 700; }
+  .caret-label { color: ${sev === "warning" ? "#fde047" : "#fca5a5"}; font-weight: 600; white-space: pre-wrap; }
+  .caret-label code { background: none; border: 0; padding: 0; color: inherit; }
+  .notes { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
+  .notes li { display: flex; gap: 10px; color: #a1a1aa; font-size: 13px; }
+  .notes .tag { flex-shrink: 0; color: #93c5fd; background: #60a5fa12; border: 1px solid #60a5fa2a; }
+  .help { margin-top: 16px; }
+  .help-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+  .help-tag { flex-shrink: 0; color: #5eead4; background: #2dd4bf12; border: 1px solid #2dd4bf33; }
+  .help-msg { flex: 1; color: #e4e4e7; font-size: 13.5px; }
+  .dl.del { background: #ef44440d; } .dl.del .sign, .dl.del mark { color: #fca5a5; }
+  .dl.add { background: #22c55e0f; } .dl.add .sign, .dl.add mark { color: #86efac; }
+  .dl .sign { width: 1.5ch; user-select: none; }
+  .dl .src { color: #a1a1aa; }
+  mark { background: transparent; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  .dl.del mark { background: #ef444426; } .dl.add mark { background: #22c55e26; }
+  details { margin-top: 18px; }
+  summary { cursor: pointer; color: #a1a1aa; font-size: 12.5px; user-select: none; }
+  summary:hover { color: #fafafa; }
+  details > pre, details > .frames { margin-top: 10px; }
+  .frames { padding: 8px 0; max-height: 340px; overflow: auto; }
+  .frame-row { display: flex; gap: 12px; padding: 3px 14px; font-size: 12px; }
+  .frame-row.head { color: #fafafa; }
+  .frame-row .fn { color: #e4e4e7; min-width: 140px; }
+  .frame-row.vendor { opacity: .45; }
+  .raw { white-space: pre-wrap; word-break: break-word; color: #d4d4d8; padding: 12px 14px; }
   .actions { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 14px; border-radius: 6px;
-    font-size: 13px; font-weight: 500;
-    border: 1px solid #27272a;
-    background: #18181b;
-    color: #e4e4e7;
-    cursor: pointer;
-    text-decoration: none;
-    font-family: inherit;
-    transition: all 0.15s ease;
-  }
+  .btn, .mini, .link { font: inherit; cursor: pointer; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid #27272a; background: #18181b; color: #e4e4e7; text-decoration: none; transition: background .15s, border-color .15s; }
   .btn:hover { background: #27272a; border-color: #3f3f46; }
-  .btn-primary {
-    background: #fafafa;
-    color: #09090b;
-    border-color: #fafafa;
-  }
-  .btn-primary:hover { background: #e4e4e7; border-color: #e4e4e7; }
-
-  .footer {
-    margin-top: 40px;
-    padding-top: 20px;
-    border-top: 1px solid #27272a;
-    display: flex; justify-content: space-between;
-    font-size: 11px; color: #52525b;
-  }
-  .footer a { color: #71717a; text-decoration: none; }
-  .footer a:hover { color: #a1a1aa; }
-
-  @media (max-width: 640px) {
-    .page { padding: 24px 16px 64px; }
-    .topbar { flex-direction: column; align-items: flex-start; gap: 8px; }
-  }
+  .btn.primary { background: #fafafa; color: #09090b; border-color: #fafafa; }
+  .btn.primary:hover { background: #e4e4e7; }
+  .mini { font-size: 11px; padding: 3px 8px; border-radius: 6px; border: 1px solid #27272a; background: #131316; color: #a1a1aa; }
+  .mini:hover { color: #fafafa; border-color: #3f3f46; }
+  .link { background: none; border: 0; padding: 0; color: #93c5fd; text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
+  .link:hover { text-decoration: underline; }
+  .footer { margin-top: 28px; display: flex; justify-content: space-between; font-size: 11.5px; color: #52525b; }
+  .footer a { color: #71717a; text-decoration: none; } .footer a:hover { color: #a1a1aa; }
+  .toast { position: fixed; top: 18px; left: 50%; transform: translate(-50%, -8px); opacity: 0; transition: .18s; background: #18181b; border: 1px solid #27272a; color: #fafafa; padding: 7px 12px; border-radius: 8px; font-size: 12.5px; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (max-width: 640px) { .page { padding: 20px 12px 64px; } .head, .body { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
 <body>
 <div class="page">
-  <div class="topbar">
+  <div class="top">
     <div class="brand">
-      <div class="brand-mark"></div>
-      <div class="brand-name">Swift Rust <span style="color:#71717a;font-weight:400">dev</span></div>
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0a0a0a" stroke="#27272a"/><g stroke="#fff" stroke-width="1.9" stroke-linecap="round" fill="none"><circle cx="16" cy="16" r="6.4"/><path d="M16 4.4v2.6M16 25v2.6M4.4 16h2.6M25 16h2.6M7.9 7.9l1.8 1.8M22.3 22.3l1.8 1.8M7.9 24.1l1.8-1.8M22.3 9.7l1.8-1.8"/></g><path d="M17.8 9.3 L11.6 17 H15.2 L14.2 22.8 L20.4 15 H16.8 Z" fill="#fb923c"/></svg>
+      <span>Swift Rust <span class="muted" style="font-weight:400">dev</span></span>
     </div>
-    <div class="topbar-right">Press <kbd style="background:#1f1f23;border:1px solid #27272a;border-radius:3px;padding:1px 5px;font-family:ui-monospace;font-size:11px">Esc</kbd> to dismiss</div>
+    <div class="muted" style="font-size:12px">Save the file to retry · <kbd>Esc</kbd> reload</div>
   </div>
 
   <div class="card">
-    <div class="card-head">
-      <span class="icon">${headerIcon}</span>
-      <span class="code-badge">${escapeHtml(finalCode)}</span>
-      <span class="title">${escapeHtml(finalTitle)}</span>
-      <span class="kind">${escapeHtml(headerLabel)}</span>
-    </div>
-    <div class="card-body">
-      <div class="lede">
-        <span class="err-code">${escapeHtml(finalCode)}</span>
-        ${escapeHtml(errMsg.split("\n")[0])}
+    <div class="head">
+      <div class="meta">
+        <span class="tag sev">${sev}${d.code ? `[${escapeHtml(d.code)}]` : ""}</span>
+        <span class="tag kind">${escapeHtml(kindLabel)}</span>
+        ${d.context ? `<span class="ctx">${escapeHtml(d.context)}</span>` : ""}
+        <span class="spacer"></span>
+        <button class="mini" data-copy-ai>Copy for AI</button>
+        ${d.docs ? `<a class="mini" href="${escapeHtml(d.docs)}" target="_blank" rel="noreferrer" style="text-decoration:none">Docs ${escapeHtml(d.code)} ↗</a>` : ""}
       </div>
-      <div class="explain">${escapeHtml(explain)}</div>
-
-      ${solution ? `
-        <div class="solution-box">
-          <div class="solution-label">💡 How to fix this (Solution)</div>
-          <div class="solution-text">${escapeHtml(solution)}</div>
-        </div>
-      ` : ""}
-
-      ${hint && hint !== solution ? `<div class="hint">${escapeHtml(hint)}</div>` : ""}
-
-      ${suggestions.length > 0 ? `
-        <div class="section-label">Step-by-step checklist</div>
-        <ul class="suggestions">
-          ${suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}
-        </ul>
-      ` : ""}
-
-      ${frame ? `
-        <div class="section-label">Source</div>
-        ${frame}
-      ` : ""}
-
-      ${stack ? `
-        <div class="stack-wrap">
-          <details>
-            <summary>Stack trace</summary>
-            <pre class="stack">${escapeHtml(stack)}</pre>
-          </details>
-        </div>
-      ` : ""}
-
+      <h1>${inlineCode(d.title)}</h1>
+    </div>
+    <div class="body">
+      ${
+        d.location
+          ? `<div class="loc"><span><span class="arrow">--&gt;</span> ${escapeHtml(d.location.file)}:${d.location.line}:${d.location.column}</span><button class="mini" data-open="${escapeHtml(d.location.abs || d.location.file)}" data-line="${d.location.line}" data-col="${d.location.column}">Open in editor</button></div>${frameHtml(d)}`
+          : ""
+      }
+      ${d.notes?.length ? `<ul class="notes">${d.notes.map((n) => `<li><span class="tag">note</span><span>${inlineCode(n)}</span></li>`).join("")}</ul>` : ""}
+      ${(d.helps || []).map((h, i) => helpHtml(h, i, d)).join("")}
+      ${showRaw ? `<details><summary>Original error message</summary><pre class="frames raw">${escapeHtml(rawMessage)}</pre></details>` : ""}
+      ${stackHtml(d)}
       <div class="actions">
-        <button class="btn btn-primary" onclick="location.reload()">Reload page</button>
-        <button class="btn" onclick="document.querySelectorAll('details').forEach(d => d.open = true)">Show all frames</button>
+        <button class="btn primary" onclick="location.reload()">Reload page</button>
         <a class="btn" href="/">Go home</a>
       </div>
     </div>
@@ -784,14 +282,32 @@ export function errorOverlayHTML({ message, stack, hint, file, line, column, kin
 
   <div class="footer">
     <div>Swift Rust v${escapeHtml(FRAMEWORK_VERSION)} · dev mode</div>
-    <div><a href="https://github.com/colesites/swift-rust/issues">Report this error</a></div>
+    <div><a href="https://github.com/multivrs-space/swift-rust/issues">Report this error</a></div>
   </div>
 </div>
+<div class="toast" id="toast"></div>
+<script type="application/json" id="__sr_diagnostic">${json}</script>
 <script>
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") location.reload();
+(function () {
+  var d = JSON.parse(document.getElementById("__sr_diagnostic").textContent);
+  var toast = document.getElementById("toast");
+  function say(t) { toast.textContent = t; toast.classList.add("show"); clearTimeout(say.t); say.t = setTimeout(function () { toast.classList.remove("show"); }, 1400); }
+  function copy(text, label) { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { say(label || "Copied"); }, function () { say("Copy failed"); }); }
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-copy],[data-copy-ai],[data-open]");
+    if (!t) return;
+    if (t.hasAttribute("data-copy-ai")) return copy(d.markdown, "Copied error as Markdown");
+    if (t.hasAttribute("data-copy")) return copy(t.getAttribute("data-copy"));
+    var q = "file=" + encodeURIComponent(t.getAttribute("data-open")) + "&line=" + (t.getAttribute("data-line") || 1) + "&column=" + (t.getAttribute("data-col") || 1);
+    fetch("/_swift-rust/open-editor?" + q, { method: "POST" }).then(function (r) { return r.json(); }).then(function (j) { say(j.ok ? "Opened in " + j.editor : (j.error || "Could not open editor")); }, function () { say("Could not open editor"); });
   });
+  document.addEventListener("keydown", function (e) {
+    var tools = window.__SR_DEVTOOLS__;
+    if (e.key === "Escape" && !(tools && tools.isOpen())) location.reload();
+  });
+})();
 </script>
+<script src="/_swift-rust/hmr-client.js" defer></script>
 </body>
 </html>`;
 }

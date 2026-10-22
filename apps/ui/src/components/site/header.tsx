@@ -4,7 +4,7 @@ import { MobileMenu } from "./mobile-menu";
 import { NavLinks } from "./nav-links";
 import { ThemeToggle } from "./theme-toggle";
 
-const GITHUB_URL = "https://github.com/colesites/swift-rust";
+const GITHUB_URL = "https://github.com/multivrs-space/swift-rust";
 
 export function SiteHeader() {
   return (

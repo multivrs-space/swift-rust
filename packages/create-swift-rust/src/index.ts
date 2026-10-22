@@ -867,7 +867,7 @@ export default function Home() {
             Read the docs →
           </a>
           <a
-            href="https://github.com/colesites/swift-rust"
+            href="https://github.com/multivrs-space/swift-rust"
             className={buttonVariants({ variant: "outline" })}
           >
             GitHub
@@ -911,7 +911,7 @@ export default function Home() {
                 <a href="https://docs-swift-rust.vercel.app/">Read the docs</a>
               </Button>
               <Button asChild variant="outline">
-                <a href="https://github.com/colesites/swift-rust">GitHub</a>
+                <a href="https://github.com/multivrs-space/swift-rust">GitHub</a>
               </Button>
             </div>
           </div>
@@ -1045,7 +1045,7 @@ export default [
 
   const readme = `# ${projectName}
 
-Built with [swift-rust](https://swift-rust.dev) — the React framework powered with Rust + Bun. 10x faster than Next.js.
+Built with [swift-rust](https://swift-rust.multivrs.space/) — the React framework powered with Rust + Bun. 10x faster than Next.js.
 
 ## Scripts
 
@@ -1068,7 +1068,7 @@ Built with [swift-rust](https://swift-rust.dev) — the React framework powered 
 ## Learn more
 
 - [Documentation](https://docs-swift-rust.vercel.app/)
-- [Examples](https://github.com/colesites/swift-rust/tree/main/examples)
+- [Examples](https://github.com/multivrs-space/swift-rust/tree/main/examples)
 - [Discord](https://discord.gg/swift-rust)
 
 ## Deploy to Vercel

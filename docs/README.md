@@ -1,6 +1,6 @@
 # docs
 
-The Swift Rust documentation site, written in swift-rust itself. Lives at https://swift-rust.dev once deployed.
+The Swift Rust documentation site, written in swift-rust itself. Lives at https://docs.multivrs.space/ once deployed. The marketing site is https://swift-rust.multivrs.space/.
 
 ## Layout
 

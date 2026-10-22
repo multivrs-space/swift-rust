@@ -23,7 +23,7 @@ function swiftRustVersion(): string {
   return "0.0.0";
 }
 
-const GITHUB = process.env.SWIFT_RUST_GITHUB_URL ?? "https://github.com/colesites/swift-rust";
+const GITHUB = process.env.SWIFT_RUST_GITHUB_URL ?? "https://github.com/multivrs-space/swift-rust";
 
 export const siteConfig = {
   /** Marketing / main site. */

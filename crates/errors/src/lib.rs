@@ -88,8 +88,38 @@ impl Error {
         }
     }
 
+    fn summary(&self) -> String {
+        match self {
+            Self::Config { message } => format!("configuration error: {message}"),
+            Self::Routing { message } => format!("routing error: {message}"),
+            Self::Compilation { file, message } => {
+                format!("compilation error in {file}: {message}")
+            }
+            Self::Bundling { message } => format!("bundling error: {message}"),
+            Self::Server { message } => format!("server error: {message}"),
+            Self::Image { message } => format!("image error: {message}"),
+            Self::Font { message } => format!("font error: {message}"),
+            Self::Pdf { message } => format!("pdf error: {message}"),
+            Self::Io(message) => format!("IO error: {message}"),
+            Self::Unknown(message) => format!("unknown error: {message}"),
+        }
+    }
+
+    pub fn docs_url(&self) -> String {
+        format!(
+            "https://github.com/multivrs-space/swift-rust/blob/main/errors/docs/{}.md",
+            self.code()
+        )
+    }
+
     pub fn format_diagnostic(&self) -> String {
-        format!("✗ {}\n│\n│ 💡 Solution: {}", self, self.solution())
+        format!(
+            "error[{}]: {}\n  = help: {}\n\nFor more information about this error, see {}",
+            self.code(),
+            self.summary(),
+            self.solution(),
+            self.docs_url()
+        )
     }
 }
 
@@ -123,8 +153,9 @@ mod tests {
             message: "Could not resolve './missing'".to_string(),
         };
         let out = err.format_diagnostic();
-        assert!(out.contains("[SR0004]"));
-        assert!(out.contains("💡 Solution:"));
+        assert!(out.contains("error[SR0004]: bundling error: Could not resolve './missing'"));
+        assert!(out.contains("= help:"));
         assert!(out.contains("browser-compatible"));
+        assert!(out.contains(&err.docs_url()));
     }
 }

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 const CHANNELS = [
   {
     name: "GitHub",
-    handle: "colesites/swift-rust",
+    handle: "multivrs-space/swift-rust",
     href: siteConfig.githubUrl,
     description: "Issues, PRs, and discussion.",
   },

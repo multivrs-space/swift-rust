@@ -1,6 +1,6 @@
 # ssr-htmx
 
-Built with [swift-rust](https://swift-rust.dev) — the Next.js alternative powered by Rust.
+Built with [swift-rust](https://swift-rust.multivrs.space/) — the Next.js alternative powered by Rust.
 
 ## Scripts
 
@@ -27,5 +27,5 @@ src/
 ## Learn more
 
 - [Documentation](https://docs-swift-rust.vercel.app/)
-- [Examples](https://github.com/colesites/swift-rust/tree/main/examples)
+- [Examples](https://github.com/multivrs-space/swift-rust/tree/main/examples)
 - [Discord](https://discord.gg/swift-rust)

@@ -116,7 +116,7 @@ export default function Home() {
         <span>swift-rust ui — open code for the swift-rust framework.</span>
         <a
           className="transition-colors hover:text-fg"
-          href="https://github.com/colesites/swift-rust"
+          href="https://github.com/multivrs-space/swift-rust"
         >
           GitHub →
         </a>

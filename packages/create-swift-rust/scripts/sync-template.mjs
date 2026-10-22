@@ -118,7 +118,7 @@ async function main() {
 
   const readme = `# ${PLACEHOLDER}
 
-A [swift-rust](https://github.com/colesites/swift-rust) app — the full demo
+A [swift-rust](https://github.com/multivrs-space/swift-rust) app — the full demo
 starter: blog, dashboard, API routes, and the Image / PDF / Video / Font
 components wired up.
 

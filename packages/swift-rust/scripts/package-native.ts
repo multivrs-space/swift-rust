@@ -87,7 +87,7 @@ function generateManifest(version: string) {
     const size = statSync(full).size;
     const sha256 = createHash("sha256").update(readFileSync(full)).digest("hex");
     manifest[t.platform] = {
-      url: `https://github.com/colesites/swift-rust/releases/download/v${version}/${file}`,
+      url: `https://github.com/multivrs-space/swift-rust/releases/download/v${version}/${file}`,
       sha256,
       size,
     };

@@ -20,6 +20,8 @@ import {
   isAbsoluteBuildPath,
   isLocalBuildSpecifier,
 } from "./runtime/path-specifier.mjs";
+import { diagnose, noAppDirDiagnostic, renderTerminal } from "./diagnostics.mjs";
+import { normalizeBuildError } from "./error-overlay.mjs";
 
 const cwd = process.cwd();
 const APP_DIR_CANDIDATES = [resolve(cwd, "src", "app"), resolve(cwd, "app")];
@@ -571,8 +573,11 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
       external: isEdge ? ["react-dom/server"] : [],
     });
     if (!result.success) {
-      const errMsgs = (result.logs || []).map((l) => l.message || JSON.stringify(l)).join("; ");
-      throw new Error(`function bundle failed: ${errMsgs}`);
+      const wrapped = normalizeBuildError(new Error("Bundle failed"), result.logs, cwd);
+      const diagnostic = diagnose(wrapped, { cwd, pageFile, context: `while bundling the function for ${route || rel}` });
+      const error = new Error(diagnostic.title);
+      error.diagnostic = diagnostic;
+      throw error;
     }
     const islandScripts = [];
     for (const islandFile of discoveredIslands) {
@@ -805,7 +810,10 @@ function startDevServer(port, logFile) {
     },
     cwd,
   });
-  proc.on("error", (e) => process.stderr.write(`  ${paint("red", "dev server spawn error:")} ${e.message}\n`));
+  proc.on("error", (e) => {
+    const diagnostic = diagnose(e, { cwd, context: "while starting the prerender server" });
+    process.stderr.write(`\n${renderTerminal(diagnostic, paint)}\n`);
+  });
   return proc;
 }
 
@@ -965,7 +973,7 @@ async function main() {
   process.stdout.write(`\n  ${paint("cyan", "▲")} ${paint("bold", "swift-rust build")} ${paint("dim", "→ .vercel/output (BOA v3)")}\n`);
 
   if (!existsSync(APP_DIR)) {
-    process.stderr.write(`\n  ${paint("red", "✗")} No app/ directory found in ${cwd}\n\n`);
+    process.stderr.write(`\n${renderTerminal(diagnose({ diagnostic: noAppDirDiagnostic(cwd) }, { cwd }), paint)}\n\n`);
     process.exit(1);
   }
 
@@ -1077,7 +1085,7 @@ async function main() {
           try {
             emitted = await emitFunction({ route, pageFile, runtime: fnRuntime, head: fnHead, guardEnabled: fnGuard, isClient, islandSrc });
           } catch (e) {
-            process.stdout.write(`      ${paint("dim", `fn emit failed: ${e?.message || e}`)}\n`);
+            printBuildError(e, `while emitting the function for ${route}`);
           }
           if (emitted) {
             fnCount++;
@@ -1097,13 +1105,21 @@ async function main() {
           process.stdout.write(`  ${paint("dim", "○")} ${route} ${paint("dim", "(404, skipped)")}\n`);
         } else {
           failCount++;
-          const snippet = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
           process.stdout.write(`  ${paint("yellow", "!")} ${route} ${paint("dim", `(${status})`)}\n`);
-          if (snippet) process.stdout.write(`      ${paint("dim", snippet)}\n`);
+          const embedded = diagnosticFromHtml(body);
+          if (embedded) process.stdout.write(`\n${renderTerminal(embedded, paint)}\n`);
+          else {
+            const snippet = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+            if (snippet) process.stdout.write(`      ${paint("dim", snippet)}\n`);
+          }
         }
       } catch (e) {
         failCount++;
-        process.stdout.write(`  ${paint("red", "✗")} ${route} ${paint("dim", e.name === "AbortError" ? "timeout" : e.message)}\n`);
+        if (e?.name === "AbortError") {
+          process.stdout.write(`  ${paint("red", "✗")} ${route} ${paint("dim", "timed out while rendering")}\n`);
+        } else {
+          printBuildError(e, `while rendering ${route}`);
+        }
       }
     }
 
@@ -1121,7 +1137,7 @@ async function main() {
       try {
         emitted = await emitFunction({ funcRel, pageFile, runtime, head: fallbackHead || "", guardEnabled: dirGuard, isClient, islandSrc });
       } catch (e) {
-        process.stdout.write(`      ${paint("dim", `fn emit failed: ${e?.message || e}`)}\n`);
+        printBuildError(e, `while emitting the function for ${dyn.route || relDir}`);
       }
       if (emitted) {
         fnCount++;
@@ -1293,7 +1309,22 @@ async function main() {
   }
 }
 
+function diagnosticFromHtml(body) {
+  const match = String(body || "").match(/<script type="application\/json" id="__sr_diagnostic">([\s\S]*?)<\/script>/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function printBuildError(err, context) {
+  const diagnostic = err?.diagnostic || diagnose(err, { cwd, context });
+  process.stdout.write(`\n${renderTerminal(diagnostic, paint)}\n`);
+}
+
 main().catch((e) => {
-  process.stderr.write(`\n  ${paint("red", "✗")} ${e?.stack || e?.message || String(e)}\n\n`);
+  printBuildError(e, "while building");
   process.exit(1);
 });

@@ -15,6 +15,11 @@ export function isSupportedBunVersion(version) {
 }
 
 export function unsupportedBunMessage(version) {
-  const found = version ? `Found ${version}.` : "Could not determine the installed version.";
-  return `swift-rust requires Bun ${MINIMUM_BUN_VERSION} or newer. ${found} Run \`bun upgrade\` and try again.`;
+  const found = version ? `found Bun ${version}` : "could not determine the installed version";
+  return [
+    `error[SR0073]: swift-rust requires Bun ${MINIMUM_BUN_VERSION} or newer`,
+    `  = note: ${found}`,
+    "  = help: upgrade Bun, then run the command again",
+    "           bun upgrade",
+  ].join("\n");
 }

@@ -3,10 +3,10 @@
   "version": "0.7.1",
   "description": "swift-rust ui — a shadcn-style component registry with a third style dimension (variant × size × design) built for Tailwind v4.",
   "license": "MIT",
-  "homepage": "https://swift-rust.dev",
+  "homepage": "https://swift-rust.multivrs.space/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/colesites/swift-rust.git",
+    "url": "https://github.com/multivrs-space/swift-rust.git",
     "directory": "packages/ui"
   },
   "type": "module",
@@ -49,6 +49,6 @@
     "access": "public"
   },
   "bugs": {
-    "url": "https://github.com/colesites/swift-rust/issues"
+    "url": "https://github.com/multivrs-space/swift-rust/issues"
   }
 }

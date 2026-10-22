@@ -1,6 +1,10 @@
+import { CopyCommand } from "@/components/copy-command";
+import { NpmDownloads } from "@/components/npm-downloads";
 import { posts } from "@/lib/posts";
 import { siteConfig } from "@/lib/site.config";
 import { Link } from "swift-rust";
+
+const CREATE_COMMAND = "bun create swift-rust@latest";
 
 const BENTO_SECONDARY = [
   {
@@ -206,10 +210,10 @@ export default function HomePage() {
               <Link href="/blog/introducing-swift-rust" className="btn btn-outline btn-lg">
                 <span>Read the Benchmarks</span>
               </Link>
-              <div className="inline-flex h-[2.875rem] items-center gap-2.5 rounded-full border border-border bg-surface px-4 font-mono text-[0.8125rem] text-fg-muted shadow-xs">
-                <span className="text-accent select-none">▲ ~</span>
-                <span className="text-fg">bun create swift-rust@latest</span>
-              </div>
+              <CopyCommand command={CREATE_COMMAND} />
+            </div>
+            <div className="mt-5">
+              <NpmDownloads />
             </div>
           </div>
 
@@ -795,9 +799,7 @@ export default function HomePage() {
                 >
                   Start for free
                 </a>
-                <code className=" inline-flex h-11 items-center rounded-full border border-white/15 bg-white/5 px-4 font-mono text-[0.8125rem] text-stone-200">
-                  $ bun create swift-rust@latest
-                </code>
+                <CopyCommand command={CREATE_COMMAND} tone="dark" />
               </div>
             </div>
           </div>

@@ -2,6 +2,8 @@
 
 The full-stack React framework powered with Rust + Bun. Inspired by Next.js. **10x faster than Next.js.** Write your UI in TSX, render on the server with Rust, and ship a single binary.
 
+Site: https://swift-rust.multivrs.space/ · Source: https://github.com/multivrs-space/swift-rust
+
 ## Features
 
 - **TSX-first** — Author components in TypeScript with first-class TSX syntax, just like TanStack Start. A custom SWC plugin transforms TSX into optimized Rust view templates.
