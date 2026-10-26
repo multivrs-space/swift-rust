@@ -14,6 +14,8 @@
     "clean": "rm -rf .swift-rust .vercel .turbo dist"
   },
   "dependencies": {
+    "@swift-rust/font": "workspace:*",
+    "@swift-rust/pdf": "workspace:*",
     "@vercel/analytics": "^2.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
