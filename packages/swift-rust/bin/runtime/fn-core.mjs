@@ -2,6 +2,7 @@
 // (edge / node / bun). No Bun-only APIs — renders with react-dom/server.
 // Mirrors the dev-server route pipeline so emitted functions behave the same.
 import { createElement } from "react";
+import { runWithRouteContext } from "./route-context.mjs";
 
 async function renderTree(tree) {
   try {
@@ -251,7 +252,7 @@ function thrownToResponse(err, url) {
   return null;
 }
 
-async function nodeToWebRequest(req) {
+export async function nodeToWebRequest(req) {
   const proto =
     String(req.headers?.["x-forwarded-proto"] || (req.socket?.encrypted ? "https" : "http"))
       .split(",")[0]
@@ -308,7 +309,7 @@ async function nodeToWebRequest(req) {
   return new Request(fullUrl, { method, headers, body });
 }
 
-async function sendWebResponseToNode(webRes, res) {
+export async function sendWebResponseToNode(webRes, res) {
   res.statusCode = webRes.status;
   const setCookies =
     typeof webRes.headers.getSetCookie === "function" ? webRes.headers.getSetCookie() : [];
@@ -327,6 +328,10 @@ async function sendWebResponseToNode(webRes, res) {
 
 export function makeRouteHandler(opts) {
   async function webFetch(request) {
+    return runWithRouteContext(() => handleRequest(request));
+  }
+
+  async function handleRequest(request) {
     const url = new URL(request.url);
     const params = matchParams(opts.pattern || [], url.pathname, url, request.headers);
     for (const k of [...url.searchParams.keys()]) {

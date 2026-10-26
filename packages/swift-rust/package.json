@@ -1,6 +1,6 @@
 {
   "name": "swift-rust",
-  "version": "1.11.3",
+  "version": "1.12.1",
   "description": "The full-stack React framework powered with Rust + Bun. TSX-first, Rust rendering, 10x faster than Next.js, single binary deploy.",
   "license": "MIT",
   "homepage": "https://swift-rust.multivrs.space/",

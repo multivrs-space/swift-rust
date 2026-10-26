@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +8,9 @@ const ROOT = join(import.meta.dir, "..", "..");
 const GEN_PKG = join(ROOT, "packages", "create-swift-rust");
 const GEN = join(GEN_PKG, "dist", "index.js");
 const FONT_GOOGLE = join(ROOT, "packages", "font", "dist", "google.js");
+
+// Each scaffold asks the npm registry for the latest swift-rust (4s timeout).
+setDefaultTimeout(30_000);
 
 const tmps: string[] = [];
 function scaffold(args: string[]): string {

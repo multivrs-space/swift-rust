@@ -116,6 +116,40 @@ export default function Invoice({ items }) {
 }
 ```
 
+## Deployment
+
+`swift-rust build` has two targets, so the same repo deploys to both with no config:
+
+| Target                  | Output           | Selected when                                  |
+| ----------------------- | ---------------- | ---------------------------------------------- |
+| `multivrs` (default)    | `dist/`          | no flag, no config, not on Vercel              |
+| `vercel`                | `.vercel/output` | `VERCEL=1` (set by Vercel builds) or `--target vercel` |
+
+`--target <name>` wins, then `"target"` in `swift-rust.config.json`, then `VERCEL=1`.
+
+### Multivrs (default)
+
+```bash
+bun install --frozen-lockfile
+NODE_ENV=production bunx swift-rust build
+cd dist && PORT=8080 bun server.mjs
+```
+
+`dist/multivrs-build.json` lists every route with its `renderMode`. Prerendered pages are
+`"wasm"` and are served from `dist/static/` on the CDN. Request-time routes are `"ssr"` on
+`"bun"`. They are handled by `dist/server.mjs`, one self-contained ES module with every
+dependency bundled. That server also runs API routes (`app/api/**/route.ts`), server
+actions (`/_swift-rust/action`), `rpc.ts` / `stream.ts` handlers, and images at
+`/_swift-rust/image`.
+
+### Vercel
+
+Import the repo at [vercel.com/new](https://vercel.com/new). Vercel sets `VERCEL=1`, so
+`bun run build` writes the Build Output API v3 (`.vercel/output`; API routes, server
+actions and rpc/stream share one function at `/_swift-rust/endpoints`), sets
+`"bunVersion"` in `vercel.json`, and routes images through `/_vercel/image`. Locally:
+`bunx swift-rust build --target vercel`.
+
 ## Running the examples
 
 ```bash

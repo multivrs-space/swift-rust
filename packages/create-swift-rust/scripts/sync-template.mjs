@@ -130,11 +130,18 @@ bun run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Build
+## Build & deploy
 
 \`\`\`bash
-bun run build   # → .vercel/output (Build Output API v3)
+bun run build   # → dist/ for Multivrs (default)
 \`\`\`
+
+- **Multivrs** (default): \`bun run build\` writes \`dist/multivrs-build.json\`,
+  a self-contained \`dist/server.mjs\` and \`dist/static/\`. Run it locally with
+  \`cd dist && PORT=8080 bun server.mjs\`.
+- **Vercel**: import the repo on Vercel. Vercel sets \`VERCEL=1\`, so the same
+  \`bun run build\` emits \`.vercel/output\`. Locally:
+  \`bun run build --target vercel\`.
 
 ## Structure
 

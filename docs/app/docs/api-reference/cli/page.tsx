@@ -29,14 +29,21 @@ bunx swift-rust dev --open`}</code>
       <h2>
         <code>swift-rust build</code>
       </h2>
-      <p>Build for production. Produces a single binary.</p>
+      <p>
+        Build for production. <code>--target</code> picks the deploy platform: <code>multivrs</code>{" "}
+        (the default) writes <code>dist/</code>; <code>vercel</code> writes{" "}
+        <code>.vercel/output</code>. Without the flag, the build uses <code>"target"</code> from{" "}
+        <code>swift-rust.config.json</code>, then <code>vercel</code> when <code>VERCEL=1</code> is
+        set, otherwise <code>multivrs</code>. See{" "}
+        <a href="/docs/getting-started/deploying">Deploying</a>.
+      </p>
       <div className="code-block">
         <div className="code-block-header">
           <span>terminal</span>
         </div>
         <pre>
-          <code>{`bunx swift-rust build
-bunx swift-rust build --target aarch64-unknown-linux-musl`}</code>
+          <code>{`bunx swift-rust build                   # Multivrs → dist/
+bunx swift-rust build --target vercel   # Vercel → .vercel/output`}</code>
         </pre>
       </div>
 

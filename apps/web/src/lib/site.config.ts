@@ -2,14 +2,14 @@
  * Single source of truth for external URLs and the framework version.
  *
  * Override URLs at build time with environment variables (e.g. in the Vercel
- * dashboard or a local .env). The version is read from the installed
- * `swift-rust` package, so it updates automatically on every release — no
- * hand-editing "v0.1.0" across the site.
+ * dashboard or a local .env). The version is the latest `swift-rust`
+ * published to npm (fetched at build time), so the site never advertises an
+ * unreleased version. Set SWIFT_RUST_VERSION to override it.
  */
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
-function swiftRustVersion(): string {
+function workspaceSwiftRustVersion(): string {
   try {
     // Anchor the resolver to the project root (cwd) rather than import.meta.url:
     // the dev server imports modules with a cache-busting query string, which
@@ -22,6 +22,24 @@ function swiftRustVersion(): string {
   }
   return "0.0.0";
 }
+
+async function publishedSwiftRustVersion(): Promise<string> {
+  try {
+    const res = await fetch("https://registry.npmjs.org/swift-rust/latest", {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      const { version } = (await res.json()) as { version?: string };
+      if (version && /^\d+\.\d+\.\d+/.test(version)) return version;
+    }
+  } catch {
+    // offline / registry down → fall back to the workspace package
+  }
+  return workspaceSwiftRustVersion();
+}
+
+const VERSION = process.env.SWIFT_RUST_VERSION ?? (await publishedSwiftRustVersion());
 
 const GITHUB = process.env.SWIFT_RUST_GITHUB_URL ?? "https://github.com/multivrs-space/swift-rust";
 const UI =
@@ -39,6 +57,8 @@ export const siteConfig = {
   githubUrl: GITHUB,
   /** GitHub issues. Derived from githubUrl unless explicitly overridden. */
   issuesUrl: process.env.SWIFT_RUST_ISSUES_URL ?? `${GITHUB}/issues`,
-  /** Framework version, read from the installed swift-rust package. */
-  version: swiftRustVersion(),
+  /** Latest published swift-rust version (npm), e.g. "1.12.1". */
+  version: VERSION,
+  /** Release line for headings, e.g. "1.12". */
+  releaseLine: VERSION.split(".").slice(0, 2).join("."),
 } as const;

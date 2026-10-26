@@ -1,5 +1,8 @@
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, CString};
+#[cfg(target_os = "macos")]
 use std::os::raw::{c_char, c_int, c_void};
+#[cfg(target_os = "macos")]
 use std::ptr;
 use swift_rust_errors::{Error, Result};
 
@@ -135,6 +138,7 @@ impl JsEngine for JavaScriptCoreEngine {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = script;
             Err(Error::Server {
                 message: "JavaScriptCore C-FFI is available on macOS target".to_string(),
             })
@@ -142,7 +146,7 @@ impl JsEngine for JavaScriptCoreEngine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
