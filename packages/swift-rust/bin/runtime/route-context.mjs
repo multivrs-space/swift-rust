@@ -1,6 +1,9 @@
 const AsyncLocalStorageImpl =
   globalThis.AsyncLocalStorage ?? globalThis.process?.getBuiltinModule?.("node:async_hooks")?.AsyncLocalStorage;
-const routeCtxStore = AsyncLocalStorageImpl ? new AsyncLocalStorageImpl() : null;
+if (AsyncLocalStorageImpl && !globalThis.__SR_ROUTE_CTX_STORE__) {
+  globalThis.__SR_ROUTE_CTX_STORE__ = new AsyncLocalStorageImpl();
+}
+const routeCtxStore = globalThis.__SR_ROUTE_CTX_STORE__ ?? null;
 
 /**
  * Backs globalThis.__SR_ROUTE_CTX__ (read by useLoaderData() / useActionData())
