@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { expectIsolatedRouteContext } from "./endpoint-contract";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -39,6 +40,7 @@ describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
     expect(fonts.length).toBeGreaterThan(0);
     const funcs = [
       "_swift-rust/endpoints",
+      "ctx/[id]",
       "dash",
       "docs/[[...slug]]",
       "feed/preview/[id]",
@@ -71,6 +73,7 @@ describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
       "hmr-client.js",
       "navigator.js",
       "path-specifier.mjs",
+      "route-context.mjs",
     ];
     const expected = [
       "config.json",
@@ -107,6 +110,7 @@ describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
         dest: "/_swift-rust/endpoints?__sr_path=/_swift-rust/action",
       },
       { src: "^/api(/.*)?$", dest: "/_swift-rust/endpoints?__sr_path=/api$1" },
+      { src: "^/ctx/([^/]+)/?$", dest: "/ctx/[id]?__sr_p0=$1" },
       { src: "^/docs(?:/(.*))?/?$", dest: "/docs/[[...slug]]?__sr_p0=$1" },
       { src: "^/feed/preview/([^/]+)/?$", dest: "/feed/preview/[id]?__sr_p0=$1" },
       { src: "^/item/([^/]+)/?$", dest: "/item/[id]?__sr_p0=$1" },
@@ -407,5 +411,15 @@ describe("API routes, server actions and rpc/stream (Vercel endpoints function)"
     );
     expect(statusCode).toBe(200);
     expect(new TextDecoder().decode(bodyBytes)).toBe('{"path":["a","b"]}');
+  });
+});
+
+describe("route context isolation (Vercel function)", () => {
+  test("concurrent invocations keep their own loader data across Suspense", async () => {
+    const mod = await import(join(FN, "ctx", "[id].func", "index.js"));
+    await expectIsolatedRouteContext(async (path) => {
+      const res: Response = await mod.default(new Request(`https://t.dev${path}`));
+      return res.text();
+    });
   });
 });

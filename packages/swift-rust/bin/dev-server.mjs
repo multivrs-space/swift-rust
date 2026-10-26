@@ -29,6 +29,7 @@ import {
   unsupportedBunMessage,
 } from "./runtime/bun-version.mjs";
 import { FRAMEWORK_VERSION } from "./runtime/framework-version.mjs";
+import { runWithRouteContext } from "./runtime/route-context.mjs";
 import { actionExport, invokeApiRoute, parseActionRequest, runServerAction } from "./server-core.mjs";
 import {
   isAbsoluteBuildPath,
@@ -4285,7 +4286,7 @@ try {
       // payloads (e.g. the first compile of a heavy page). 255s is Bun's max.
       idleTimeout: 255,
       async fetch(req) {
-        return await handleFetch(req);
+        return await runWithRouteContext(() => handleFetch(req));
       },
     });
     logReady();

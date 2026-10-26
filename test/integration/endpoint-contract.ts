@@ -158,3 +158,16 @@ export async function runEndpointCase(base: string, c: Case) {
   if (c.body !== undefined) expect(await res.json()).toEqual(c.body);
   if (c.text !== undefined) expect(await res.text()).toBe(c.text);
 }
+
+const lateId = (html: string) => html.match(/data-late-id="([^"]*)"/)?.[1];
+
+/**
+ * Two overlapping requests to /ctx/[id]: the slow one suspends, the fast one
+ * renders and finishes in between. Each must still read its own loader data.
+ */
+export async function expectIsolatedRouteContext(render: (path: string) => Promise<string>) {
+  const slow = render("/ctx/slow-1");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const fast = render("/ctx/fast-2");
+  expect([lateId(await slow), lateId(await fast)]).toEqual(["slow-1", "fast-2"]);
+}

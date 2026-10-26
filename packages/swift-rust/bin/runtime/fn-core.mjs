@@ -2,6 +2,7 @@
 // (edge / node / bun). No Bun-only APIs — renders with react-dom/server.
 // Mirrors the dev-server route pipeline so emitted functions behave the same.
 import { createElement } from "react";
+import { runWithRouteContext } from "./route-context.mjs";
 
 async function renderTree(tree) {
   try {
@@ -327,6 +328,10 @@ export async function sendWebResponseToNode(webRes, res) {
 
 export function makeRouteHandler(opts) {
   async function webFetch(request) {
+    return runWithRouteContext(() => handleRequest(request));
+  }
+
+  async function handleRequest(request) {
     const url = new URL(request.url);
     const params = matchParams(opts.pattern || [], url.pathname, url, request.headers);
     for (const k of [...url.searchParams.keys()]) {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ENDPOINT_CASES, runEndpointCase } from "./endpoint-contract";
+import { ENDPOINT_CASES, expectIsolatedRouteContext, runEndpointCase } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
@@ -290,7 +290,8 @@ describe("dev server route pipeline", () => {
     if (!m) throw new Error("component island script was not injected");
     // The bundle is self-mounting and contains the real component logic.
     const bundle = await (await get(`/_swift-rust/island-comp.js?p=${m[1]}`)).text();
-    expect(bundle).toContain("hydrateRoot");
+    expect(bundle).toContain("[data-sr-island]");
+    expect(bundle).toContain("__srHydrated");
     expect(bundle).toContain("useState");
     expect(bundle).toContain("data-sr-island-src");
   });
@@ -572,4 +573,9 @@ describe("endpoint contract (dev server)", () => {
   for (const c of ENDPOINT_CASES) {
     test(c.name, () => runEndpointCase(BASE, c));
   }
+});
+
+describe("route context isolation (dev server)", () => {
+  test("concurrent requests keep their own loader data across Suspense", () =>
+    expectIsolatedRouteContext(async (path) => (await fetch(`${BASE}${path}`)).text()));
 });

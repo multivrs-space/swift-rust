@@ -11,7 +11,7 @@ import {
   routeSrc,
   validateMultivrsManifest,
 } from "../../packages/swift-rust/bin/targets.mjs";
-import { ENDPOINT_CASES, runEndpointCase } from "./endpoint-contract";
+import { ENDPOINT_CASES, expectIsolatedRouteContext, runEndpointCase } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
@@ -278,11 +278,16 @@ describe("dist/server.mjs at runtime", () => {
     test(`endpoint contract: ${c.name}`, () => runEndpointCase(base, c));
   }
 
+  test("concurrent requests keep their own loader data across Suspense", () =>
+    expectIsolatedRouteContext(async (path) => (await fetch(`${base}${path}`)).text()));
+
   test("API errors return a generic 500 and reach instrumentation.onRequestError", async () => {
     const res = await fetch(`${base}/api/boom`);
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Internal error" });
-    const inst = (await (await fetch(`${base}/api/instrumentation`)).json()) as { lastError: string | null };
+    const inst = (await (await fetch(`${base}/api/instrumentation`)).json()) as {
+      lastError: string | null;
+    };
     expect(inst.lastError).toBe("/api/boom: secret internal detail");
   });
 
