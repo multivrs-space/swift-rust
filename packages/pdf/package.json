@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/pdf",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "PDF component tree and viewer for swift-rust.",
   "license": "MIT",
   "type": "module",

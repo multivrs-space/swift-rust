@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/eslint-config",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Shared ESLint configuration for swift-rust projects.",
   "license": "MIT",
   "type": "module",

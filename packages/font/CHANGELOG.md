@@ -1,5 +1,11 @@
 # @swift-rust/font
 
+## 0.3.3
+
+### Patch Changes
+
+- 1314a72: Point package homepage and repository metadata at swift-rust.multivrs.space and github.com/multivrs-space/swift-rust.
+
 ## 0.2.0
 
 ### Minor Changes

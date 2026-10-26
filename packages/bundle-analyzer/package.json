@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/bundle-analyzer",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Visualize the size of swift-rust bundles.",
   "license": "MIT",
   "type": "module",
