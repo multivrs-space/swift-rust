@@ -1,6 +1,6 @@
-import { siteConfig } from "@/lib/site.config";
 import type { Metadata } from "swift-rust";
 import { Link } from "swift-rust";
+import { Version } from "@/components/live-version";
 
 export const metadata: Metadata = {
   title: "About",
@@ -140,7 +140,7 @@ export default function AboutPage() {
               How a request flows in 0.90ms
             </h2>
           </div>
-          <span className="badge font-mono">v{siteConfig.version} Runtime</span>
+          <span className="badge font-mono">v<Version /> Runtime</span>
         </div>
         <div className="mt-6 grid gap-4 md:grid-cols-3">
           {PIPELINE_STEPS.map((item) => (

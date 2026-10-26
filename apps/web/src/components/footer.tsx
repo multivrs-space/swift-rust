@@ -1,6 +1,7 @@
 import { siteConfig } from "@/lib/site.config";
 import { Link } from "swift-rust";
 import { Logo } from "./logo";
+import { Version } from "@/components/live-version";
 
 const COLUMNS: Array<{
   title: string;
@@ -158,7 +159,7 @@ export function Footer() {
                 rel="noreferrer"
                 className="font-mono underline decoration-border-strong underline-offset-4 transition-colors hover:text-fg"
               >
-                v{siteConfig.version}
+                v<Version />
               </a>
             </div>
           </div>
