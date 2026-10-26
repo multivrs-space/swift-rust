@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { expectIsolatedRouteContext } from "./endpoint-contract";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { expectIsolatedRouteContext } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
