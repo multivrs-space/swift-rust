@@ -368,7 +368,7 @@ export default function HomePage() {
                   RELEASE v{siteConfig.version}
                 </span>
                 <h3 className="mt-4 font-display text-2xl font-bold tracking-tight text-white">
-                  Swift Rust 1.11
+                  Swift Rust {siteConfig.releaseLine}
                 </h3>
                 <p className="mt-2 text-[0.875rem] leading-relaxed text-orange-50/90">
                   The power of full-stack React 19 compiled to a single Rust executable. Migrate in one
