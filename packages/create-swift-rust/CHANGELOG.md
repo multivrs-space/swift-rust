@@ -1,5 +1,11 @@
 # create-swift-rust
 
+## 0.9.9
+
+### Patch Changes
+
+- The generated README documents both deploy targets: Multivrs (the default, `dist/`) and Vercel (`.vercel/output`, chosen automatically on Vercel). The offline fallback `swift-rust` range is now `^1.12.0`.
+
 ## 0.3.0
 
 ### Minor Changes

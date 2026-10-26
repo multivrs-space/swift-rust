@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
@@ -13,10 +13,109 @@ const FN = join(OUT, "functions");
 const readStatic = (p: string) => readFileSync(join(STATIC, p), "utf8");
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 
+const listFiles = (dir: string): string[] =>
+  readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    return statSync(full).isDirectory() ? listFiles(full) : [relative(OUT, full)];
+  });
+
 beforeAll(() => {
-  const r = spawnSync("bun", [BUILD], { cwd: FIX, encoding: "utf8" });
+  const { VERCEL: _ignored, ...env } = process.env;
+  const r = spawnSync("bun", [BUILD], {
+    cwd: FIX,
+    encoding: "utf8",
+    env: { ...env, VERCEL: "1" },
+  });
   if (r.status !== 0) throw new Error(`fixture build failed:\n${r.stdout}\n${r.stderr}`);
 }, 90_000);
+
+describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
+  test("emits exactly the Build Output API v3 file set", () => {
+    const files = listFiles(OUT).sort();
+    const islands = files.filter((f) => f.startsWith("static/_swift-rust/island/"));
+    const fonts = files.filter((f) => f.startsWith("static/_swift-rust/fonts/"));
+    const rest = files.filter((f) => !islands.includes(f) && !fonts.includes(f));
+    expect(islands.length).toBe(3);
+    expect(fonts.length).toBeGreaterThan(0);
+    const funcs = [
+      "dash",
+      "docs/[[...slug]]",
+      "feed/preview/[id]",
+      "item/[id]",
+      "photo/[id]",
+      "shop",
+      "static-bad",
+      "widget",
+    ];
+    const pages = [
+      "_public/index.html",
+      "cached/index.html",
+      "counter/index.html",
+      "feed/index.html",
+      "gallery/index.html",
+      "index.html",
+      "ppr-demo/index.html",
+      "safe-html-demo/index.html",
+      "scriptdemo/index.html",
+      "serveraction/index.html",
+      "static-ok/index.html",
+      "templated/index.html",
+      "usecache/index.html",
+    ];
+    const runtime = [
+      "bun-version.mjs",
+      "fn-core.mjs",
+      "framework-version.mjs",
+      "hmr-client.js",
+      "navigator.js",
+      "path-specifier.mjs",
+    ];
+    const expected = [
+      "config.json",
+      ...funcs.flatMap((f) =>
+        [".vc-config.json", "index.js", "package.json"].map((n) => `functions/${f}.func/${n}`),
+      ),
+      "static/404.html",
+      "static/robots.txt",
+      "static/sitemap.xml",
+      ...pages.map((p) => `static/${p}`),
+      ...runtime.map((r) => `static/_swift-rust/${r}`),
+    ].sort();
+    expect(rest).toEqual(expected);
+  });
+  test("config.json routes are unchanged", () => {
+    const routes = readJson(join(OUT, "config.json")).routes;
+    const cache = { "Cache-Control": "public, max-age=31536000, immutable" };
+    expect(routes.slice(0, 2)).toEqual([
+      { src: "/_swift-rust/static/(.*)", headers: cache },
+      { src: "/fonts/(.*)", headers: cache },
+    ]);
+    expect(routes.slice(-2)).toEqual([
+      { handle: "filesystem" },
+      { src: "^(.*)$", status: 404, dest: "/404.html" },
+    ]);
+    const fnRoutes = routes
+      .slice(2, -2)
+      .sort((a: { src: string }, b: { src: string }) => a.src.localeCompare(b.src));
+    expect(fnRoutes).toEqual([
+      { src: "^/docs(?:/(.*))?/?$", dest: "/docs/[[...slug]]?__sr_p0=$1" },
+      { src: "^/feed/preview/([^/]+)/?$", dest: "/feed/preview/[id]?__sr_p0=$1" },
+      { src: "^/item/([^/]+)/?$", dest: "/item/[id]?__sr_p0=$1" },
+      { src: "^/photo/([^/]+)/?$", dest: "/photo/[id]?__sr_p0=$1" },
+    ]);
+  });
+  test("vercel.json keeps bunVersion for Bun functions", () => {
+    expect(readJson(join(FIX, "vercel.json")).bunVersion).toBe("1.x");
+  });
+  test("Bun-runtime functions target nodejs22.x with Vercel's Bun launcher config", () => {
+    expect(readJson(join(FN, "photo", "[id].func", ".vc-config.json"))).toEqual({
+      runtime: "nodejs22.x",
+      handler: "index.js",
+      launcherType: "Nodejs",
+      supportsResponseStreaming: true,
+    });
+  });
+});
 
 describe("static rendering", () => {
   test("home page is prerendered to static HTML", () => {
@@ -158,6 +257,7 @@ describe("function request pipeline", () => {
     const r = await invoke("item/[id].func", "/item/widget-42");
     expect(r.html).toContain("widget-42");
     expect(r.html).toContain('data-api="https://prod.example.com"');
+    expect(r.html).toContain('data-region="from-env-file"');
     expect(r.html).toContain("data-sr-island");
     expect(r.html).toMatch(
       /<script type="module" src="\/_swift-rust\/island\/[a-z0-9]+\.js"><\/script>/,

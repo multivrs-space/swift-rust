@@ -17,7 +17,7 @@
     "postcss": "^8.5.15",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "swift-rust": "^1.10.10",
+    "swift-rust": "^1.12.0",
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {

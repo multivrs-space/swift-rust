@@ -22,14 +22,51 @@ import {
 } from "./runtime/path-specifier.mjs";
 import { diagnose, noAppDirDiagnostic, renderTerminal } from "./diagnostics.mjs";
 import { normalizeBuildError } from "./error-overlay.mjs";
+import {
+  MULTIVRS_BINARY,
+  MULTIVRS_MANIFEST,
+  MULTIVRS_STATIC_DIR,
+  buildMultivrsManifest,
+  resolveBuildTarget,
+  routeSrc,
+  sortBySegments,
+  validateMultivrsManifest,
+} from "./targets.mjs";
 
 const cwd = process.cwd();
 const APP_DIR_CANDIDATES = [resolve(cwd, "src", "app"), resolve(cwd, "app")];
 const APP_DIR = APP_DIR_CANDIDATES.find((p) => existsSync(p)) ?? resolve(cwd, "app");
 const PUBLIC_DIR = resolve(cwd, "public");
-const OUT_DIR = resolve(cwd, ".vercel", "output");
-const STATIC_DIR = join(OUT_DIR, "static");
 const RUNTIME_DIR = resolve(fileURLToPath(import.meta.url), "..", "runtime");
+const MULTIVRS_SERVER_RUNTIME = resolve(fileURLToPath(import.meta.url), "..", "multivrs-server.mjs");
+
+function readProjectConfig() {
+  const file = resolve(cwd, "swift-rust.config.json");
+  if (!existsSync(file)) return {};
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
+
+let BUILD_TARGET;
+let TARGET_SOURCE;
+try {
+  ({ target: BUILD_TARGET, source: TARGET_SOURCE } = resolveBuildTarget({
+    argv: process.argv.slice(2),
+    env: process.env,
+    config: readProjectConfig(),
+  }));
+} catch (e) {
+  process.stderr.write(`error: ${e.message}\n  = help: swift-rust build --target multivrs | --target vercel\n`);
+  process.exit(1);
+}
+const IS_VERCEL = BUILD_TARGET === "vercel";
+const OUT_DIR = IS_VERCEL ? resolve(cwd, ".vercel", "output") : resolve(cwd, "dist");
+const STATIC_DIR = join(OUT_DIR, IS_VERCEL ? "static" : MULTIVRS_STATIC_DIR);
+const OUT_LABEL = IS_VERCEL ? ".vercel/output" : "dist";
+const serverRoutes = [];
 
 const ROUTING_EXTS = [".tsx", ".ts", ".jsx", ".js"];
 const ISLAND_EXTS = [".tsx", ".ts", ".jsx", ".js", ".mjs"];
@@ -64,6 +101,7 @@ function parseEnvFile(filePath) {
 }
 
 let _envDefines = null;
+const _fileEnv = {};
 function getEnvDefines() {
   if (_envDefines) return _envDefines;
   const dotEnv = parseEnvFile(resolve(cwd, ".env"));
@@ -84,6 +122,7 @@ function getEnvDefines() {
       prodVal !== procVal;
     const resolved = procVal !== undefined && !isAutoLoadedFromDotEnv ? procVal : fileVal;
     process.env[k] = resolved;
+    _fileEnv[k] = resolved;
     defines[`process.env.${k}`] = JSON.stringify(resolved);
   }
   for (const [k, v] of Object.entries(process.env)) {
@@ -97,6 +136,24 @@ function getEnvDefines() {
   }
   _envDefines = defines;
   return defines;
+}
+
+const isPublicEnvKey = (k) => k.startsWith("SWIFT_RUST_PUBLIC_") || k.startsWith("NEXT_PUBLIC_");
+
+function getServerDefines() {
+  const out = {};
+  for (const [key, value] of Object.entries(getEnvDefines())) {
+    const name = key.slice("process.env.".length);
+    if (name === "NODE_ENV" || isPublicEnvKey(name)) out[key] = value;
+  }
+  return out;
+}
+
+function getServerEnvDefaults() {
+  getEnvDefines();
+  const out = {};
+  for (const [k, v] of Object.entries(_fileEnv)) if (!isPublicEnvKey(k)) out[k] = v;
+  return out;
 }
 
 // Scan a file's leading directives for a runtime / guard opt-in.
@@ -388,7 +445,7 @@ function __wrap(Comp, name){
   return out;
 }
 
-function makeClientIslandPlugin(temps, discoveredIslands, pageFile) {
+function makeClientIslandPlugin(temps, discoveredIslands, pageFiles) {
   return {
     name: "sr-client-islands",
     setup(build) {
@@ -398,7 +455,7 @@ function makeClientIslandPlugin(temps, discoveredIslands, pageFile) {
         if (/\.__sr_raw_/.test(p) || /\.__sr_fn_/.test(p)) return { path: p, namespace: "file" };
         if (args.importer && isClientPageFile(args.importer)) return undefined;
         const abs = resolveIslandSpecifier(p, args.importer);
-        if (!abs || abs === pageFile || !isClientPageFile(abs)) return undefined;
+        if (!abs || pageFiles.has(abs) || !isClientPageFile(abs)) return undefined;
         discoveredIslands.add(abs);
         return { path: abs, namespace: "sr-island" };
       });
@@ -488,23 +545,10 @@ for (var i = 0; i < nodes.length; i++) {
   return null;
 }
 
-// Generate + bundle a Vercel function (.func) for one dynamic route.
-async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnabled, isClient, islandSrc }) {
-  if (typeof Bun === "undefined" || typeof Bun.build !== "function") return false;
+function routeHandlerOptions({ pageFile, ns, runtime, head, guardEnabled, isClient, islandSrc, bodyScriptsSource }) {
   const f = collectChainFiles(pageFile);
-  const fnCore = join(RUNTIME_DIR, "fn-core.mjs");
-  const imports = [`import { makeRouteHandler } from ${JSON.stringify(fnCore)};`];
-  let uid = 0;
-  const ns = (file) => {
-    const name = `__m${uid++}`;
-    imports.push(`import * as ${name} from ${JSON.stringify(file)};`);
-    return name;
-  };
   const arr = (files) => `[${files.map((file) => ns(file)).join(", ")}]`;
   const opt = (file) => (file ? ns(file) : "undefined");
-
-  // IMPORTANT: resolve every ns()/arr()/opt() (which append to `imports`)
-  // BEFORE joining `imports` — otherwise body-only modules go unimported.
   const pageNs = ns(pageFile);
   const layoutsArr = `[${f.layouts.map((l) => (l.file ? ns(l.file) : "null")).join(", ")}]`;
   const templatesArr = `[${(f.templates || []).map((t) => (t ? ns(t) : "null")).join(", ")}]`;
@@ -519,13 +563,55 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
   const seoNs = opt(f.seoFile);
   const i18nNs = opt(f.i18nFile);
   const revNs = opt(f.revalidateFile);
+  return (
+    `{\n` +
+    `  page: ${pageNs}, layouts: ${layoutsArr}, templates: ${templatesArr}, layoutMetas: ${layoutsArr}, slots: ${slotsArr},\n` +
+    `  proxies: ${proxiesArr}, schemas: ${schemasArr}, guards: ${guardsArr}, guardEnabled: ${guardEnabled ? "true" : "false"},\n` +
+    `  action: ${actionNs}, loaders: ${loadersArr}, query: ${queryNs}, state: ${stateNs},\n` +
+    `  seo: ${seoNs}, i18n: ${i18nNs}, revalidate: ${revNs},\n` +
+    `  isClient: ${isClient ? "true" : "false"}, islandSrc: ${JSON.stringify(islandSrc || "")},\n` +
+    `  bodyScripts: ${bodyScriptsSource},\n` +
+    `  pattern: ${JSON.stringify(f.pattern)}, runtime: ${JSON.stringify(runtime)}, head: ${JSON.stringify(head)},\n` +
+    `}`
+  );
+}
 
-  const instCandidate = [
+function findInstrumentationFile() {
+  return [
     join(cwd, "src", "instrumentation.ts"),
     join(cwd, "src", "instrumentation.js"),
     join(cwd, "instrumentation.ts"),
     join(cwd, "instrumentation.js"),
   ].find((p) => existsSync(p));
+}
+
+// Bundle one route's request-time handler. On the Vercel target it is written
+// as a .func; on Multivrs it is recorded for the single server bundle.
+async function emitFunction({ route, funcRel, segments, pageFile, runtime, head, guardEnabled, isClient, islandSrc }) {
+  if (typeof Bun === "undefined" || typeof Bun.build !== "function") return false;
+  const fnCore = join(RUNTIME_DIR, "fn-core.mjs");
+  const imports = [`import { makeRouteHandler } from ${JSON.stringify(fnCore)};`];
+  let uid = 0;
+  const ns = (file) => {
+    const name = `__m${uid++}`;
+    imports.push(`import * as ${name} from ${JSON.stringify(file)};`);
+    return name;
+  };
+
+  // IMPORTANT: resolve every ns() (which appends to `imports`) BEFORE joining
+  // `imports` — otherwise body-only modules go unimported.
+  const handlerOpts = routeHandlerOptions({
+    pageFile,
+    ns,
+    runtime,
+    head,
+    guardEnabled,
+    isClient,
+    islandSrc,
+    bodyScriptsSource: `"__SR_BODY_SCRIPTS_PLACEHOLDER__"`,
+  });
+
+  const instCandidate = findInstrumentationFile();
   let instBootstrap = "";
   if (instCandidate) {
     const instNs = ns(instCandidate);
@@ -535,15 +621,7 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
   const entry =
     `${imports.join("\n")}\n` +
     `${instBootstrap}` +
-    `const handler = makeRouteHandler({\n` +
-    `  page: ${pageNs}, layouts: ${layoutsArr}, templates: ${templatesArr}, layoutMetas: ${layoutsArr}, slots: ${slotsArr},\n` +
-    `  proxies: ${proxiesArr}, schemas: ${schemasArr}, guards: ${guardsArr}, guardEnabled: ${guardEnabled ? "true" : "false"},\n` +
-    `  action: ${actionNs}, loaders: ${loadersArr}, query: ${queryNs}, state: ${stateNs},\n` +
-    `  seo: ${seoNs}, i18n: ${i18nNs}, revalidate: ${revNs},\n` +
-    `  isClient: ${isClient ? "true" : "false"}, islandSrc: ${JSON.stringify(islandSrc || "")},\n` +
-    `  bodyScripts: "__SR_BODY_SCRIPTS_PLACEHOLDER__",\n` +
-    `  pattern: ${JSON.stringify(f.pattern)}, runtime: ${JSON.stringify(runtime)}, head: ${JSON.stringify(head)},\n` +
-    `});\n` +
+    `const handler = makeRouteHandler(${handlerOpts});\n` +
     `export default handler;\n` +
     `export const fetch = handler;\n` +
     `export const GET = handler;\n` +
@@ -556,7 +634,6 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
 
   const rel = funcRel || (route === "/" ? "index.func" : `${route.replace(/^\//, "")}.func`);
   const funcDir = join(OUT_DIR, "functions", rel);
-  mkdirSync(funcDir, { recursive: true });
   const entryTmp = join(APP_DIR, `.__sr_fn_${process.pid}_${simpleHash(rel)}.js`);
   writeFileSync(entryTmp, entry);
   const temps = [];
@@ -569,7 +646,7 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
       format: "esm",
       minify: true,
       define: getEnvDefines(),
-      plugins: [makeClientIslandPlugin(temps, discoveredIslands, pageFile)],
+      plugins: [makeClientIslandPlugin(temps, discoveredIslands, new Set([pageFile]))],
       external: isEdge ? ["react-dom/server"] : [],
     });
     if (!result.success) {
@@ -585,6 +662,11 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
       if (staticUrl) islandScripts.push(`<script type="module" src="${staticUrl}"></script>`);
     }
     const bodyScripts = islandScripts.join("");
+    if (!IS_VERCEL) {
+      serverRoutes.push({ segments, pageFile, runtime: "bun", head, guardEnabled, isClient, islandSrc, bodyScripts });
+      return true;
+    }
+    mkdirSync(funcDir, { recursive: true });
     let code = await result.outputs[0].text();
     code = code.replace(/["'`]__SR_BODY_SCRIPTS_PLACEHOLDER__["'`]/g, JSON.stringify(bodyScripts));
     writeFileSync(join(funcDir, "index.js"), code);
@@ -606,6 +688,87 @@ async function emitFunction({ route, funcRel, pageFile, runtime, head, guardEnab
       } catch {}
     }
   }
+}
+
+// Multivrs: bundle every server route, the image route and the router into
+// one self-contained dist/server.mjs (no node_modules at runtime).
+async function buildMultivrsServer(notFoundHtml) {
+  const fnCore = join(RUNTIME_DIR, "fn-core.mjs");
+  const tag = `${process.pid}_${Date.now()}`;
+  const envTmp = join(APP_DIR, `.__sr_fn_${tag}_env.js`);
+  const entryTmp = join(APP_DIR, `.__sr_fn_${tag}_server.js`);
+  const imports = [
+    `import ${JSON.stringify(envTmp)};`,
+    `import { makeRouteHandler } from ${JSON.stringify(fnCore)};`,
+    `import { startServer } from ${JSON.stringify(MULTIVRS_SERVER_RUNTIME)};`,
+  ];
+  const nsNames = new Map();
+  const ns = (file) => {
+    if (!nsNames.has(file)) {
+      const name = `__m${nsNames.size}`;
+      nsNames.set(file, name);
+      imports.push(`import * as ${name} from ${JSON.stringify(file)};`);
+    }
+    return nsNames.get(file);
+  };
+  const routeLines = sortBySegments(serverRoutes).map((r) => {
+    const opts = routeHandlerOptions({ ...r, ns, bodyScriptsSource: JSON.stringify(r.bodyScripts) });
+    return `  { src: ${JSON.stringify(routeSrc(r.segments))}, handler: makeRouteHandler(${opts}) },`;
+  });
+  const instFile = findInstrumentationFile();
+  const register = instFile ? `${ns(instFile)}.register` : "undefined";
+  const entry =
+    `${imports.join("\n")}\n` +
+    `await startServer({\n` +
+    `  routes: [\n${routeLines.join("\n")}\n  ],\n` +
+    `  notFoundHtml: ${JSON.stringify(notFoundHtml)},\n` +
+    `  staticDir: ${JSON.stringify(MULTIVRS_STATIC_DIR)},\n` +
+    `  register: ${register},\n` +
+    `});\n`;
+  const envDefaults = getServerEnvDefaults();
+  writeFileSync(
+    envTmp,
+    `const defaults = ${JSON.stringify(envDefaults)};\n` +
+      `for (const k of Object.keys(defaults)) if (process.env[k] === undefined) process.env[k] = defaults[k];\n`,
+  );
+  writeFileSync(entryTmp, entry);
+  const temps = [];
+  try {
+    const result = await Bun.build({
+      entrypoints: [entryTmp],
+      target: "bun",
+      format: "esm",
+      minify: true,
+      define: getServerDefines(),
+      plugins: [makeClientIslandPlugin(temps, new Set(), new Set(serverRoutes.map((r) => r.pageFile)))],
+    });
+    if (!result.success) {
+      const wrapped = normalizeBuildError(new Error("Bundle failed"), result.logs, cwd);
+      const diagnostic = diagnose(wrapped, { cwd, context: "while bundling dist/server.mjs" });
+      const error = new Error(diagnostic.title);
+      error.diagnostic = diagnostic;
+      throw error;
+    }
+    const out = result.outputs.find((o) => o.kind === "entry-point") || result.outputs[0];
+    writeFileSync(join(OUT_DIR, MULTIVRS_BINARY), await out.text());
+  } finally {
+    for (const t of [envTmp, entryTmp, ...temps]) {
+      try {
+        unlinkSync(t);
+      } catch {}
+    }
+  }
+}
+
+function writeMultivrsManifest(staticRoutes) {
+  const manifest = buildMultivrsManifest([
+    ...serverRoutes.map((r) => ({ segments: r.segments, renderMode: "ssr", runtime: "bun" })),
+    ...staticRoutes.map((route) => ({ segments: route.split("/").filter(Boolean), renderMode: "wasm" })),
+  ]);
+  const problems = validateMultivrsManifest(manifest);
+  if (problems.length) throw new Error(`invalid ${MULTIVRS_MANIFEST}: ${problems.join("; ")}`);
+  writeFileSync(join(OUT_DIR, MULTIVRS_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
 }
 
 // Vercel runs functions on Bun when vercel.json sets bunVersion. Ensure it's
@@ -970,7 +1133,8 @@ function writeConfigJson(outDir, _hasPublic, fnRoutes = []) {
 async function main() {
   const start = Date.now();
   getEnvDefines();
-  process.stdout.write(`\n  ${paint("cyan", "▲")} ${paint("bold", "swift-rust build")} ${paint("dim", "→ .vercel/output (BOA v3)")}\n`);
+  const targetLabel = IS_VERCEL ? "→ .vercel/output (BOA v3)" : "→ dist (Multivrs)";
+  process.stdout.write(`\n  ${paint("cyan", "▲")} ${paint("bold", "swift-rust build")} ${paint("dim", targetLabel)}\n`);
 
   if (!existsSync(APP_DIR)) {
     process.stderr.write(`\n${renderTerminal(diagnose({ diagnostic: noAppDirDiagnostic(cwd) }, { cwd }), paint)}\n\n`);
@@ -978,7 +1142,8 @@ async function main() {
   }
 
   process.stdout.write(`  ${paint("dim", "app:   ")} ${paint("cyan", APP_DIR.replace(cwd + sep, ""))}\n`);
-  process.stdout.write(`  ${paint("dim", "out:   ")} ${paint("cyan", ".vercel/output")}\n\n`);
+  process.stdout.write(`  ${paint("dim", "target:")} ${paint("cyan", BUILD_TARGET)} ${paint("dim", `(${TARGET_SOURCE})`)}\n`);
+  process.stdout.write(`  ${paint("dim", "out:   ")} ${paint("cyan", OUT_LABEL)}\n\n`);
 
   rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(STATIC_DIR, { recursive: true });
@@ -1046,6 +1211,7 @@ async function main() {
   let usesBunFns = false;
   let fallbackHead = null;
   const fnConfigRoutes = [];
+  const staticWritten = [];
   try {
     await waitForServer(proc);
     process.stdout.write(`  ${paint("green", "✓")} server ready\n\n`);
@@ -1054,7 +1220,8 @@ async function main() {
       try {
         const { status, body, runtime, dynamic, guardEnabled } = await fetchRoute(route);
         const pageFile = routeToFile.get(route);
-        const cleaned = status === 200 ? rewriteImageUrls(await localizeIslands(stripHmrScript(body))) : null;
+        const localized = status === 200 ? await localizeIslands(stripHmrScript(body)) : null;
+        const cleaned = localized && IS_VERCEL ? rewriteImageUrls(localized) : localized;
         if (cleaned && fallbackHead == null) {
           fallbackHead = (cleaned.match(/<head>([\s\S]*?)<\/head>/i) || [, ""])[1];
         }
@@ -1083,7 +1250,16 @@ async function main() {
           const isClient = isClientPageFile(pageFile);
           const islandSrc = isClient ? await buildIslandAsset(pageFile) : null;
           try {
-            emitted = await emitFunction({ route, pageFile, runtime: fnRuntime, head: fnHead, guardEnabled: fnGuard, isClient, islandSrc });
+            emitted = await emitFunction({
+              route,
+              segments: route.split("/").filter(Boolean),
+              pageFile,
+              runtime: fnRuntime,
+              head: fnHead,
+              guardEnabled: fnGuard,
+              isClient,
+              islandSrc,
+            });
           } catch (e) {
             printBuildError(e, `while emitting the function for ${route}`);
           }
@@ -1097,6 +1273,7 @@ async function main() {
 
         if (status === 200) {
           writeStaticFile(STATIC_DIR, route, cleaned);
+          staticWritten.push(route);
           okCount++;
           const rt = runtime && runtime !== "bun" ? ` ${paint("yellow", `[${runtime}]`)}` : "";
           process.stdout.write(`  ${paint("green", "✓")} ${route}${rt}\n`);
@@ -1135,7 +1312,16 @@ async function main() {
       const islandSrc = isClient ? await buildIslandAsset(pageFile) : null;
       let emitted = false;
       try {
-        emitted = await emitFunction({ funcRel, pageFile, runtime, head: fallbackHead || "", guardEnabled: dirGuard, isClient, islandSrc });
+        emitted = await emitFunction({
+          funcRel,
+          segments: relDir.split("/").filter(Boolean).map((seg) => seg.replace(/^%5F/i, "_")),
+          pageFile,
+          runtime,
+          head: fallbackHead || "",
+          guardEnabled: dirGuard,
+          isClient,
+          islandSrc,
+        });
       } catch (e) {
         printBuildError(e, `while emitting the function for ${dyn.route || relDir}`);
       }
@@ -1282,7 +1468,14 @@ async function main() {
       process.stdout.write(`  ${paint("green", "✓")} _swift-rust/fonts/\n`);
     }
 
-    writeConfigJson(OUT_DIR, hasPublic, fnConfigRoutes);
+    if (IS_VERCEL) {
+      writeConfigJson(OUT_DIR, hasPublic, fnConfigRoutes);
+    } else {
+      await buildMultivrsServer(readFileSync(join(STATIC_DIR, "404.html"), "utf8"));
+      process.stdout.write(`  ${paint("green", "✓")} ${MULTIVRS_BINARY} ${paint("dim", `(${serverRoutes.length} server route${serverRoutes.length === 1 ? "" : "s"})`)}\n`);
+      const manifest = writeMultivrsManifest(staticWritten);
+      process.stdout.write(`  ${paint("green", "✓")} ${MULTIVRS_MANIFEST} ${paint("dim", `(${manifest.routes.length} routes)`)}\n`);
+    }
 
     const total = Date.now() - start;
     const outRel = OUT_DIR.startsWith(cwd + sep) ? OUT_DIR.slice(cwd.length + 1) : OUT_DIR;
@@ -1293,18 +1486,21 @@ async function main() {
     process.stdout.write(`\n  ${paint("bold", "done")} ${paint("dim", "in " + fmtMs(total))}\n`);
     process.stdout.write(summary);
     process.stdout.write(`  ${paint("dim", "output: " + outRel)}\n`);
-    if (usesBunFns) {
+    if (IS_VERCEL && usesBunFns) {
       ensureBunVersion();
+    }
+    if (!IS_VERCEL) {
+      process.stdout.write(`  ${paint("dim", `run:    cd ${outRel} && PORT=8080 bun ${MULTIVRS_BINARY}`)}\n`);
     }
     process.stdout.write("\n");
 
     const treatFailuresAsWarning = okCount > 0;
-    process.exit(treatFailuresAsWarning || failCount === 0 ? 0 : 1);
+    process.exitCode = treatFailuresAsWarning || failCount === 0 ? 0 : 1;
   } finally {
     try { proc.kill(process.platform === "win32" ? undefined : "SIGTERM"); } catch {}
     setTimeout(() => {
       try { proc.kill(process.platform === "win32" ? undefined : "SIGKILL"); } catch {}
-      process.exit(0);
+      process.exit(process.exitCode ?? 0);
     }, 2000).unref();
   }
 }

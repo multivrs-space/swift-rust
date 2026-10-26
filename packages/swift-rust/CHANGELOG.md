@@ -1,5 +1,18 @@
 # swift-rust
 
+## 1.12.0
+
+### Minor Changes
+
+- `swift-rust build` now supports build targets. **Multivrs is the new default target.**
+  - `--target multivrs` (default) writes `dist/multivrs-build.json`, a self-contained `dist/server.mjs` (all dependencies bundled; start it with `bun server.mjs`, listening on `0.0.0.0:$PORT`) and `dist/static/` for the CDN. Prerendered pages are `"wasm"` routes. Request-time routes are `"ssr"` on `"bun"`. Images are served by the server at `/_swift-rust/image`. Runtime env vars are read from `process.env` at request time, with `.env.production` values as defaults.
+  - `--target vercel` keeps the existing `.vercel/output` (Build Output API v3) output unchanged, including `vercel.json` `"bunVersion"` and `/_vercel/image` rewrites.
+  - With no flag, the build uses `"target"` from `swift-rust.config.json`, then `vercel` when `VERCEL=1` is set (as on Vercel builds), otherwise `multivrs`. Existing Vercel deployments keep working with no changes.
+
+### Patch Changes
+
+- `swift-rust build` no longer leaves its prerender dev server running after it finishes. The orphaned process kept stdout/stderr open, which could hang CI pipelines that capture build output.
+
 ## 1.0.0
 
 ### Major Changes

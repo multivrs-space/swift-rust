@@ -6,75 +6,117 @@ export default function DeployingPage() {
     <DocArticle>
       <h1>Deploying</h1>
       <p>
-        Swift Rust produces a single statically-linked binary. You can deploy it anywhere Linux runs
-        — Docker containers, bare metal, Kubernetes, or a $5 VPS.
+        <code>swift-rust build</code> supports two deploy targets. <strong>Multivrs</strong> is the
+        default. <strong>Vercel</strong> is picked automatically when the build runs on Vercel. The
+        same repository deploys to both with no extra config.
       </p>
 
-      <h2>Build for production</h2>
+      <h2>Choosing a target</h2>
+      <ol>
+        <li>
+          <code>--target multivrs</code> or <code>--target vercel</code> on the command line.
+        </li>
+        <li>
+          <code>"target"</code> in <code>swift-rust.config.json</code> pins it for the project.
+        </li>
+        <li>
+          <code>vercel</code> when <code>VERCEL=1</code> is set (Vercel sets this during builds).
+        </li>
+        <li>
+          Otherwise <code>multivrs</code>.
+        </li>
+      </ol>
+      <div className="code-block">
+        <div className="code-block-header">
+          <span>swift-rust.config.json</span>
+        </div>
+        <pre>
+          <code>{`{
+  "target": "multivrs"
+}`}</code>
+        </pre>
+      </div>
+
+      <h2>Deploy to Multivrs (default)</h2>
+      <p>
+        Push the repo to Multivrs, which runs <code>bun run build</code>. Locally:
+      </p>
       <div className="code-block">
         <div className="code-block-header">
           <span>terminal</span>
         </div>
         <pre>
-          <code>{`bun run build
-# → ./target/release/swift-rust-app
-# A single binary, ~12-20MB, no Node required`}</code>
+          <code>{`bun install --frozen-lockfile
+NODE_ENV=production bunx swift-rust build
+# dist/
+#   multivrs-build.json   build manifest
+#   server.mjs            self-contained server (all deps bundled)
+#   static/               uploaded to the CDN as-is`}</code>
         </pre>
       </div>
-
-      <h2>Run the production server</h2>
-      <div className="code-block">
-        <div className="code-block-header">
-          <span>terminal</span>
-        </div>
-        <pre>
-          <code>{"PORT=3000 ./target/release/swift-rust-app"}</code>
-        </pre>
-      </div>
-
-      <h2>Environment variables</h2>
       <ul>
         <li>
-          <code>PORT</code> — the port to bind to (default: <code>3000</code>)
+          Prerendered pages go to <code>dist/static/</code> and are served from the CDN at the same
+          path. They are listed in the manifest with <code>"renderMode": "wasm"</code>, along with
+          <code>404.html</code>, favicons, fonts and island bundles.
         </li>
         <li>
-          <code>HOST</code> — the host to bind to (default: <code>0.0.0.0</code>)
+          Request-time routes (dynamic <code>[param]</code> and catch-all routes without{" "}
+          <code>generateStaticParams</code>, and routes that opt into a runtime with{" "}
+          <code>"use bun"</code> / <code>"use node"</code>) are bundled into{" "}
+          <code>dist/server.mjs</code>. They are listed as <code>"renderMode": "ssr"</code>,{" "}
+          <code>"runtime": "bun"</code>.
         </li>
         <li>
-          <code>DATABASE_URL</code> — and any others you load via <code>@swift-rust/env</code>
+          Images go through <code>/_swift-rust/image</code> on the server, not Vercel's optimizer.
+        </li>
+        <li>
+          Runtime env vars are read from <code>process.env</code> at request time. Values from{" "}
+          <code>.env.production</code> act as defaults. <code>SWIFT_RUST_PUBLIC_*</code> vars are
+          inlined at build time.
         </li>
       </ul>
-
-      <h2>Docker</h2>
+      <p>Run the production server exactly as Multivrs does:</p>
       <div className="code-block">
         <div className="code-block-header">
-          <span>Dockerfile</span>
+          <span>terminal</span>
         </div>
         <pre>
-          <code>{`FROM rust:1.85-slim AS builder
-WORKDIR /app
-COPY . .
-RUN bun install && bun run build
-
-FROM debian:bookworm-slim
-COPY --from=builder /app/target/release/swift-rust-app /usr/local/bin/app
-EXPOSE 3000
-CMD ["/usr/local/bin/app"]`}</code>
+          <code>{`cd dist && PORT=8080 bun server.mjs`}</code>
         </pre>
       </div>
-
-      <h2>Static export</h2>
       <p>
-        For pure static sites, set <code>"output": "export"</code> in your config. The build will
-        produce an
-        <code>out/</code> directory you can upload to any static host (Cloudflare Pages, Vercel, S3,
-        etc.).
+        The server listens on <code>0.0.0.0:$PORT</code>. When <code>dist/static/</code> sits next
+        to it, the server also serves those files, which is handy locally. Each request is logged to
+        stdout.
+      </p>
+      <div className="code-block">
+        <div className="code-block-header">
+          <span>dist/multivrs-build.json</span>
+        </div>
+        <pre>
+          <code>{`{
+  "framework": "swift-rust",
+  "binary": "server.mjs",
+  "staticDir": "static",
+  "routes": [
+    { "src": "/_swift-rust/image/?", "renderMode": "ssr", "runtime": "bun" },
+    { "src": "/about/?", "renderMode": "wasm" },
+    { "src": "/", "renderMode": "wasm" },
+    { "src": "/b/[^/]+/?", "renderMode": "ssr", "runtime": "bun" }
+  ]
+}`}</code>
+        </pre>
+      </div>
+      <p>
+        Each <code>src</code> is a regular expression matched as <code>^(?:src)$</code> against the
+        pathname.
       </p>
 
       <h2>Deploy to Vercel</h2>
       <p>
-        Every new app from <code>create-swift-rust</code> ships with a <code>vercel.json</code>
-        preconfigured for the Swift Rust build output. To deploy:
+        Every new app from <code>create-swift-rust</code> ships with a <code>vercel.json</code>. To
+        deploy:
       </p>
       <ol>
         <li>Push your project to a GitHub repository.</li>
@@ -86,19 +128,66 @@ CMD ["/usr/local/bin/app"]`}</code>
           and import the repo.
         </li>
         <li>
-          Click <strong>Deploy</strong>. Vercel will run <code>bun run build</code> which produces{" "}
-          <code>.vercel/output/</code> and serves it on the CDN.
+          Click <strong>Deploy</strong>. Vercel sets <code>VERCEL=1</code> and runs{" "}
+          <code>bun run build</code>, which writes the Build Output API v3 to{" "}
+          <code>.vercel/output/</code>.
         </li>
       </ol>
       <p>
-        The static export supports pre-rendered pages, 404 handling, immutable asset caching, and
-        <code>generateStaticParams</code> for catch-all routes. Serverless functions, ISR, and Edge
-        runtime are planned for v0.2.0.
+        Prerendered pages are served from Vercel's CDN. Request-time routes become Vercel Functions,
+        and the build sets <code>"bunVersion"</code> in <code>vercel.json</code> for Bun functions.
+        Images use Vercel's optimizer at <code>/_vercel/image</code>. To produce the Vercel output
+        locally:
       </p>
+      <div className="code-block">
+        <div className="code-block-header">
+          <span>terminal</span>
+        </div>
+        <pre>
+          <code>{`bunx swift-rust build --target vercel`}</code>
+        </pre>
+      </div>
+
+      <h2>Environment variables</h2>
+      <ul>
+        <li>
+          <code>PORT</code> — the port <code>server.mjs</code> binds to on <code>0.0.0.0</code>{" "}
+          (default: <code>8080</code>)
+        </li>
+        <li>
+          <code>DATABASE_URL</code> — and any others you load via <code>@swift-rust/env</code>
+        </li>
+      </ul>
+
+      <h2>Docker</h2>
       <p>
-        To deploy the same project to a different provider, run <code>bun run build</code> locally
-        and upload the contents of <code>.vercel/output/static/</code> to any static host (Netlify,
-        Cloudflare Pages, S3 + CloudFront, GitHub Pages).
+        <code>dist/</code> runs anywhere Bun does, with no install step:
+      </p>
+      <div className="code-block">
+        <div className="code-block-header">
+          <span>Dockerfile</span>
+        </div>
+        <pre>
+          <code>{`FROM oven/bun:1 AS builder
+WORKDIR /app
+COPY . .
+RUN bun install --frozen-lockfile && NODE_ENV=production bunx swift-rust build --target multivrs
+
+FROM oven/bun:1-slim
+WORKDIR /app
+COPY --from=builder /app/dist ./
+ENV PORT=8080
+EXPOSE 8080
+CMD ["bun", "server.mjs"]`}</code>
+        </pre>
+      </div>
+
+      <h2>Static export</h2>
+      <p>
+        For pure static sites, set <code>"output": "export"</code> in your config. The build will
+        produce an
+        <code>out/</code> directory you can upload to any static host (Cloudflare Pages, Vercel, S3,
+        etc.).
       </p>
 
       <h2>Next steps</h2>

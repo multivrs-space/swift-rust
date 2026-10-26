@@ -24,7 +24,8 @@ yarn add swift-rust
 
 ```bash
 npx swift-rust dev      # start dev server
-npx swift-rust build    # production build
+npx swift-rust build    # production build → dist/ (Multivrs, default)
+npx swift-rust build --target vercel   # → .vercel/output (auto when VERCEL=1)
 npx swift-rust start    # start production server
 npx swift-rust info     # print environment
 ```
@@ -46,6 +47,14 @@ export default function Home() {
   );
 }
 ```
+
+## Deployment
+
+`swift-rust build` targets **Multivrs** by default. It writes `dist/multivrs-build.json`, a
+self-contained `dist/server.mjs` (run it with `cd dist && PORT=8080 bun server.mjs`) and
+`dist/static/` for the CDN. On Vercel (`VERCEL=1`), or with `--target vercel`, it writes
+`.vercel/output` instead. Pin a target with `"target"` in `swift-rust.config.json`. See the
+[deploying guide](https://swift-rust.multivrs.space/docs/getting-started/deploying).
 
 ## Subpath exports
 

@@ -4,3 +4,14 @@ All notable changes to Swift Rust are documented in this file via [Changesets](h
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## 2026-10-26
+
+### swift-rust 1.12.0
+
+- **Multivrs is now the default build target.** `swift-rust build` writes `dist/multivrs-build.json`, a self-contained `dist/server.mjs` and `dist/static/`. Use `--target vercel` (or let Vercel's `VERCEL=1` pick it) for the unchanged `.vercel/output`. You can pin the target with `"target"` in `swift-rust.config.json`.
+- Fixed `swift-rust build` leaving its prerender dev server running after the build.
+
+### create-swift-rust 0.9.9
+
+- Generated README covers deploying to Multivrs (default) and Vercel.
