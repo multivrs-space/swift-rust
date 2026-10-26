@@ -1043,6 +1043,10 @@ export default [
     await writeFile(join(target, "eslint.config.mjs"), eslint);
   }
 
+  const projectTree = srcDir
+    ? `\`\`\`\nsrc/\n  app/\n    layout.${jsxExt}\n    page.${jsxExt}\n    not-found.${jsxExt}\n  components/\n  lib/\n\`\`\``
+    : `\`\`\`\napp/\n  layout.${jsxExt}\n  page.${jsxExt}\n  not-found.${jsxExt}\ncomponents/\nlib/\n\`\`\``;
+
   const readme = `# ${projectName}
 
 Built with [swift-rust](https://swift-rust.multivrs.space/) — the React framework powered with Rust + Bun. 10x faster than Next.js.
@@ -1059,11 +1063,7 @@ Built with [swift-rust](https://swift-rust.multivrs.space/) — the React framew
 
 ## Project structure
 
- ${
-   srcDir
-     ? `\`\`\`\nsrc/\n  app/\n    layout.${jsxExt}\n    page.${jsxExt}\n    not-found.${jsxExt}\n  components/\n  lib/\n\`\`\``
-     : `\`\`\`\napp/\n  layout.${jsxExt}\n  page.${jsxExt}\n  not-found.${jsxExt}\ncomponents/\nlib/\n\`\`\``
-}
+ ${projectTree}
 
 ## Learn more
 
@@ -1071,19 +1071,13 @@ Built with [swift-rust](https://swift-rust.multivrs.space/) — the React framew
 - [Examples](https://github.com/multivrs-space/swift-rust/tree/main/examples)
 - [Discord](https://discord.gg/swift-rust)
 
-## Deploy to Vercel
+## Deploy
 
-The fastest way to deploy is to push to GitHub and import the repo on Vercel:
+\`bun run build\` targets **Multivrs** by default and writes \`dist/\`: \`multivrs-build.json\`, a self-contained \`server.mjs\` and \`static/\` for the CDN. Try it locally with \`cd dist && PORT=8080 bun server.mjs\`.
 
-\`\`\`bash
-git init && git add -A && git commit -m "init"
-git remote add origin https://github.com/you/${projectName}.git
-git push -u origin main
-\`\`\`
+To deploy on **Vercel**, push to GitHub and import the repo at [vercel.com/new](https://vercel.com/new). Vercel sets \`VERCEL=1\`, so the same build writes \`.vercel/output\`. No configuration needed — \`vercel.json\` is included. Build the Vercel output locally with \`bun run build --target vercel\`.
 
-Then on [vercel.com/new](https://vercel.com/new), import the repo. No configuration needed — \`vercel.json\` is included. Your site will be live at \`https://${projectName}.vercel.app\`.
-
-For custom domains and ISR / serverless functions, see the [deploy guide](https://docs-swift-rust.vercel.app/docs/getting-started/deploying).
+To pin a target or set up custom domains, see the [deploy guide](https://docs-swift-rust.vercel.app/docs/getting-started/deploying).
 `;
   await writeFile(join(target, "README.md"), readme);
 
