@@ -90,6 +90,16 @@ export function LikeButton({ postId }: { postId: string }) {
 }`}</code>
         </pre>
       </div>
+
+      <h2>Deploying</h2>
+      <p>
+        Server actions are served at <code>/_swift-rust/action</code>. When you build, only modules
+        that start with <code>"use server"</code> (or are named <code>actions.ts</code> /{" "}
+        <code>action.ts</code>) are bundled and callable, so a client can&apos;t invoke arbitrary
+        exports. On Multivrs they run in <code>dist/server.mjs</code>; on Vercel, in the{" "}
+        <code>/_swift-rust/endpoints</code> function. In production, an action that throws returns a
+        generic error and the real one is logged.
+      </p>
     </DocArticle>
   );
 }

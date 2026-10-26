@@ -29,6 +29,7 @@ import {
   unsupportedBunMessage,
 } from "./runtime/bun-version.mjs";
 import { FRAMEWORK_VERSION } from "./runtime/framework-version.mjs";
+import { actionExport, invokeApiRoute, parseActionRequest, runServerAction } from "./server-core.mjs";
 import {
   isAbsoluteBuildPath,
   isLocalBuildSpecifier,
@@ -3252,67 +3253,9 @@ function actionErrorResponse(spec) {
 }
 
 async function handleServerAction(req) {
-  let actionId = req.headers?.get?.("x-action-id") || req.headers?.get?.("next-action");
-  const ctype = req.headers?.get?.("content-type") || "";
-  const isForm = ctype.includes("multipart/form-data") || ctype.includes("application/x-www-form-urlencoded");
-  const isJson = ctype.includes("application/json");
-  let args = [];
-  let formData = null;
-
-  if (isForm) {
-    try {
-      formData = await req.formData();
-      if (!actionId && formData.has("__sr_action_id")) {
-        actionId = String(formData.get("__sr_action_id"));
-      }
-    } catch {
-      return Response.json({ ok: false, error: "Failed to parse form data" }, { status: 400 });
-    }
-  } else if (isJson) {
-    try {
-      const body = await req.json();
-      if (Array.isArray(body)) {
-        args = body;
-      } else if (body && typeof body === "object") {
-        if (!actionId && body.actionId) actionId = String(body.actionId);
-        if (Array.isArray(body.args)) args = body.args;
-        else if (body.data !== undefined) args = [body.data];
-        else args = [body];
-      }
-    } catch {
-      return Response.json({ ok: false, error: "Failed to parse JSON body" }, { status: 400 });
-    }
-  } else {
-    const text = await req.text().catch(() => "");
-    if (text) {
-      try {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) args = parsed;
-        else if (parsed?.actionId) {
-          if (!actionId) actionId = String(parsed.actionId);
-          args = Array.isArray(parsed.args) ? parsed.args : [parsed];
-        } else {
-          args = [parsed];
-        }
-      } catch {
-        args = [text];
-      }
-    }
-  }
-
-  if (!actionId) {
-    return Response.json({ ok: false, error: "Missing action identifier" }, { status: 400 });
-  }
-
-  let filePart = "";
-  let exportName = "default";
-  if (actionId.includes("#")) {
-    [filePart, exportName] = actionId.split("#");
-  } else if (actionId.includes(":")) {
-    [filePart, exportName] = actionId.split(":");
-  } else {
-    exportName = actionId;
-  }
+  const parsed = await parseActionRequest(req);
+  if (parsed.error) return parsed.error;
+  const { actionId, filePart, exportName } = parsed;
 
   let targetFile = null;
   const candidates = [
@@ -3367,29 +3310,10 @@ async function handleServerAction(req) {
 
   try {
     const mod = await loadModuleFresh(targetFile);
-    const fn = mod[exportName] || (exportName === "default" ? (mod.default ?? mod.action) : null);
+    const fn = actionExport(mod, exportName);
     if (typeof fn !== "function") return actionErrorResponse(serverActionNotFoundDiagnostic(exportName, targetFile, cwd));
-
-    const result = formData ? await fn(formData) : await fn(...args);
-
-    if (result instanceof Response) return result;
-
-    const acceptsHtml = (req.headers?.get?.("accept") || "").includes("text/html");
-    if (acceptsHtml && !isJson) {
-      const referer = req.headers?.get?.("referer") || "/";
-      return new Response(null, { status: 303, headers: { Location: referer } });
-    }
-
-    return Response.json({ ok: true, data: result });
+    return await runServerAction(fn, parsed, req);
   } catch (err) {
-    if (err?.digest && String(err.digest).startsWith("REDIRECT;")) {
-      const [, statusStr, ...rest] = String(err.digest).split(";");
-      const loc = rest.join(";");
-      if (isJson) {
-        return Response.json({ ok: true, redirect: loc });
-      }
-      return new Response(null, { status: parseInt(statusStr, 10) || 303, headers: { Location: loc } });
-    }
     return Response.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
@@ -4279,52 +4203,16 @@ async function handleApiRoute(req, segments, method, reqStart) {
       headers: { "Content-Type": "application/json" },
     });
   }
-  const handlerName = method.toUpperCase();
   try {
     const mod = await loadModuleFresh(route.file);
-    const handler = mod[handlerName] || mod[method.toLowerCase()];
-    if (typeof handler !== "function") {
-      const total = performance.now() - reqStart;
-      logRequest({ method, url: "/" + segments.join("/"), status: 405, duration: total, compileMs: 0 });
-      return new Response(JSON.stringify({ error: `Method ${method} not allowed` }), {
-        status: 405,
-        headers: { "Content-Type": "application/json", Allow: Object.keys(mod).filter((k) => typeof mod[k] === "function" && k === k.toUpperCase()).join(", ") },
-      });
-    }
-    const url = new URL(req.url);
-    const body = method === "GET" || method === "HEAD" ? null : await req.text().catch(() => null);
-    let parsedBody = null;
-    if (body) {
-      try {
-        parsedBody = JSON.parse(body);
-      } catch {
-        parsedBody = body;
-      }
-    }
-    const result = await handler({
-      request: req,
-      params: route.params,
-      query: Object.fromEntries(url.searchParams),
-      body: parsedBody,
-      searchParams: Object.fromEntries(url.searchParams),
-    });
+    const response = await invokeApiRoute(mod, req, route.params);
     const total = performance.now() - reqStart;
-    logRequest({ method, url: "/" + segments.join("/"), status: result?.status || 200, duration: total, compileMs: 0 });
-    if (result instanceof Response) return result;
-    if (result && typeof result === "object") {
-      return new Response(JSON.stringify(result), {
-        status: result.status || 200,
-        headers: { "Content-Type": "application/json", ...(result.headers || {}) },
-      });
-    }
-    return new Response(String(result ?? ""), {
-      status: 200,
-      headers: { "Content-Type": "text/plain" },
-    });
+    logRequest({ method, url: "/" + segments.join("/"), status: response.status, duration: total, compileMs: 0 });
+    return response;
   } catch (err) {
     if (instrumentationMod && typeof instrumentationMod.onRequestError === "function") {
       try {
-        await instrumentationMod.onRequestError(err, req, { routerKind: "App Router", routePath: pathname });
+        await instrumentationMod.onRequestError(err, req, { routerKind: "App Router", routePath: "/" + segments.join("/") });
       } catch {}
     }
     logError(err, `Failed to handle ${method} /${segments.join("/")}`);

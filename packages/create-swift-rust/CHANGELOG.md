@@ -1,5 +1,11 @@
 # create-swift-rust
 
+## 0.9.10
+
+### Patch Changes
+
+- Generated README (non-template path) documents both deploy targets: Multivrs (default) and Vercel. The project-structure snippet is built outside the template literal, so Biome 2.4 and 2.6 format it the same way. The offline fallback `swift-rust` range is now `^1.12.1`, the first release where the template's API routes deploy.
+
 ## 0.9.9
 
 ### Patch Changes

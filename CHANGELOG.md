@@ -15,3 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### create-swift-rust 0.9.9
 
 - Generated README covers deploying to Multivrs (default) and Vercel.
+
+### swift-rust 1.12.1
+
+- API routes (`app/api/**/route.ts`), server actions (`/_swift-rust/action`) and `rpc.ts` / `stream.ts` handlers now deploy on both Multivrs and Vercel; they previously worked only in `swift-rust dev`. Only `"use server"` / `actions.ts` modules can be called as actions in production.
+- Production endpoint errors return a generic 500 and are reported to `instrumentation.onRequestError`. Also fixed dev never calling `onRequestError` for API route errors.
+
+### create-swift-rust 0.9.10
+
+- Generated README covers Multivrs and Vercel; offline `swift-rust` fallback is `^1.12.1`.

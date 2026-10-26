@@ -68,6 +68,13 @@ NODE_ENV=production bunx swift-rust build
           <code>"runtime": "bun"</code>.
         </li>
         <li>
+          API routes (<code>{"app/api/**/route.ts"}</code>), server actions (
+          <code>/_swift-rust/action</code>), and <code>rpc.ts</code> / <code>stream.ts</code>{" "}
+          handlers also run in <code>dist/server.mjs</code> and are listed as <code>"ssr"</code>{" "}
+          routes. Only <code>"use server"</code> / <code>actions.ts</code> modules can be called as
+          actions.
+        </li>
+        <li>
           Images go through <code>/_swift-rust/image</code> on the server, not Vercel's optimizer.
         </li>
         <li>
@@ -134,10 +141,11 @@ NODE_ENV=production bunx swift-rust build
         </li>
       </ol>
       <p>
-        Prerendered pages are served from Vercel's CDN. Request-time routes become Vercel Functions,
-        and the build sets <code>"bunVersion"</code> in <code>vercel.json</code> for Bun functions.
-        Images use Vercel's optimizer at <code>/_vercel/image</code>. To produce the Vercel output
-        locally:
+        Prerendered pages are served from Vercel's CDN. Request-time routes become Vercel Functions;
+        API routes, server actions and <code>rpc.ts</code> / <code>stream.ts</code> share one
+        function at <code>/_swift-rust/endpoints</code>, and the build sets{" "}
+        <code>"bunVersion"</code> in <code>vercel.json</code> for Bun functions. Images use Vercel's
+        optimizer at <code>/_vercel/image</code>. To produce the Vercel output locally:
       </p>
       <div className="code-block">
         <div className="code-block-header">

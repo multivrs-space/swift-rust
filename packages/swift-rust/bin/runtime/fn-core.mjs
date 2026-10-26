@@ -251,7 +251,7 @@ function thrownToResponse(err, url) {
   return null;
 }
 
-async function nodeToWebRequest(req) {
+export async function nodeToWebRequest(req) {
   const proto =
     String(req.headers?.["x-forwarded-proto"] || (req.socket?.encrypted ? "https" : "http"))
       .split(",")[0]
@@ -308,7 +308,7 @@ async function nodeToWebRequest(req) {
   return new Request(fullUrl, { method, headers, body });
 }
 
-async function sendWebResponseToNode(webRes, res) {
+export async function sendWebResponseToNode(webRes, res) {
   res.statusCode = webRes.status;
   const setCookies =
     typeof webRes.headers.getSetCookie === "function" ? webRes.headers.getSetCookie() : [];

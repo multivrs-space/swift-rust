@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ENDPOINT_CASES, runEndpointCase } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
@@ -565,4 +566,10 @@ describe("dev server route pipeline", () => {
     expect(html).not.toContain("<script>alert('xss-attempt')</script>");
     expect(html).toContain("&lt;script&gt;alert(&#x27;xss-attempt&#x27;)&lt;/script&gt;");
   });
+});
+
+describe("endpoint contract (dev server)", () => {
+  for (const c of ENDPOINT_CASES) {
+    test(c.name, () => runEndpointCase(BASE, c));
+  }
 });

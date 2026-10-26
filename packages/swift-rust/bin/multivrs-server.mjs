@@ -86,11 +86,12 @@ function serveImage(url, staticRoot) {
 }
 
 /**
- * Starts the Multivrs production server: routes server-rendered pages to
- * their handlers, serves /_swift-rust/image, falls back to files in the
- * static dir when present, and returns 404 for everything else.
+ * Starts the Multivrs production server: serves /_swift-rust/image, server
+ * actions, API routes and rpc/stream endpoints, routes server-rendered pages to
+ * their handlers, falls back to files in the static dir when present, and
+ * returns 404 for everything else.
  */
-export async function startServer({ routes, notFoundHtml, staticDir = "static", register }) {
+export async function startServer({ routes, dispatch = null, notFoundHtml, staticDir = "static", register }) {
   if (typeof Bun === "undefined" || typeof Bun.serve !== "function") {
     throw new Error("server.mjs must be started with Bun: `bun server.mjs`");
   }
@@ -106,6 +107,10 @@ export async function startServer({ routes, notFoundHtml, staticDir = "static", 
     const url = new URL(request.url);
     const { pathname } = url;
     if (pathname === "/_swift-rust/image") return serveImage(url, staticRoot);
+    if (dispatch) {
+      const endpoint = await dispatch(request);
+      if (endpoint) return endpoint;
+    }
     for (const route of compiled) {
       if (route.re.test(pathname)) return await route.handler(request);
     }

@@ -38,11 +38,13 @@ describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
     expect(islands.length).toBe(3);
     expect(fonts.length).toBeGreaterThan(0);
     const funcs = [
+      "_swift-rust/endpoints",
       "dash",
       "docs/[[...slug]]",
       "feed/preview/[id]",
       "item/[id]",
       "photo/[id]",
+      "serveraction-ssr",
       "shop",
       "static-bad",
       "widget",
@@ -98,6 +100,13 @@ describe("VERCEL=1 selects the Vercel target (pinned output)", () => {
       .slice(2, -2)
       .sort((a: { src: string }, b: { src: string }) => a.src.localeCompare(b.src));
     expect(fnRoutes).toEqual([
+      { src: "^(/calc/?)$", dest: "/_swift-rust/endpoints?__sr_path=$1" },
+      { src: "^(/events/?)$", dest: "/_swift-rust/endpoints?__sr_path=$1" },
+      {
+        src: "^/_swift-rust/action/?$",
+        dest: "/_swift-rust/endpoints?__sr_path=/_swift-rust/action",
+      },
+      { src: "^/api(/.*)?$", dest: "/_swift-rust/endpoints?__sr_path=/api$1" },
       { src: "^/docs(?:/(.*))?/?$", dest: "/docs/[[...slug]]?__sr_p0=$1" },
       { src: "^/feed/preview/([^/]+)/?$", dest: "/feed/preview/[id]?__sr_p0=$1" },
       { src: "^/item/([^/]+)/?$", dest: "/item/[id]?__sr_p0=$1" },
@@ -321,5 +330,82 @@ describe("function request pipeline", () => {
     );
     expect(rewritten.status).toBe(200);
     expect(rewritten.html).toMatch(/docs-slug:(?:<!-- -->)?deep\/nested\/guide/);
+  });
+});
+
+describe("API routes, server actions and rpc/stream (Vercel endpoints function)", () => {
+  const call = async (path: string, init?: RequestInit) => {
+    const mod = await import(join(FN, "_swift-rust", "endpoints.func", "index.js"));
+    const res: Response = await mod.default(new Request(`https://t.dev${path}`, init));
+    return { status: res.status, body: await res.text() };
+  };
+  const rewritten = (path: string) => `/_swift-rust/endpoints?__sr_path=${path}`;
+  const jsonPost = (body: unknown): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  test("endpoint routes are rewritten before the page functions", () => {
+    const routes = readJson(join(OUT, "config.json")).routes.map((r: { src?: string }) => r.src);
+    expect(routes.indexOf("^/api(/.*)?$")).toBeLessThan(routes.indexOf("^/item/([^/]+)/?$"));
+  });
+  test("[id] API route gets params and the original query", async () => {
+    expect(await call(`${rewritten("/api/items/42")}&q=z`)).toEqual({
+      status: 200,
+      body: '{"id":"42","q":"z"}',
+    });
+  });
+  test("POST JSON body reaches the handler", async () => {
+    expect(await call(rewritten("/api/items"), jsonPost({ name: "v" }))).toEqual({
+      status: 201,
+      body: '{"created":"v","status":201}',
+    });
+  });
+  test("unknown API path is a JSON 404", async () => {
+    expect(await call(rewritten("/api/nope"))).toEqual({
+      status: 404,
+      body: '{"error":"Not found"}',
+    });
+  });
+  test("rpc.ts and server actions run in the same function", async () => {
+    expect(
+      await call(rewritten("/calc"), jsonPost({ procedure: "add", input: { a: 1, b: 2 } })),
+    ).toEqual({
+      status: 200,
+      body: '{"data":3}',
+    });
+    const action = await call(
+      rewritten("/_swift-rust/action"),
+      jsonPost({ actionId: "src/app/actions.ts#rpcMultiply", args: [2, 5] }),
+    );
+    expect(action).toEqual({ status: 200, body: '{"ok":true,"data":{"result":10}}' });
+  });
+  test("the Node (req, res) launcher bridge works", async () => {
+    const mod = await import(join(FN, "_swift-rust", "endpoints.func", "index.js"));
+    let statusCode = 0;
+    let bodyBytes: Uint8Array = new Uint8Array();
+    const res = {
+      setHeader() {},
+      set statusCode(c: number) {
+        statusCode = c;
+      },
+      get statusCode() {
+        return statusCode;
+      },
+      end(chunk?: Uint8Array) {
+        if (chunk) bodyBytes = chunk;
+      },
+    };
+    await mod.default(
+      {
+        method: "GET",
+        url: rewritten("/api/files/a/b"),
+        headers: { host: "t.dev", "x-forwarded-proto": "https" },
+      },
+      res,
+    );
+    expect(statusCode).toBe(200);
+    expect(new TextDecoder().decode(bodyBytes)).toBe('{"path":["a","b"]}');
   });
 });

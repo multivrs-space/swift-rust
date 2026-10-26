@@ -1,5 +1,15 @@
 # swift-rust
 
+## 1.12.1
+
+### Patch Changes
+
+- **API routes now deploy.** `swift-rust build` bundles every `app/api/**/route.ts` for both targets. Previously they worked in dev but returned 404 in production, including the six routes in the `create-swift-rust` template. On Multivrs they run in `dist/server.mjs` and are listed in `multivrs-build.json`, along with an `/api(?:/.*)?` catch-all that returns dev's JSON 404. On Vercel they run in one `/_swift-rust/endpoints` function. Matching precedence, the handler context (`{ request, params, query, body, searchParams }`), JSON/text responses, 405 + `Allow`, and the JSON 404 all match `swift-rust dev`, which now uses the same code.
+- **Server actions now deploy.** `POST /_swift-rust/action` is served in production on both targets. Only modules with `"use server"` (or named `actions.ts` / `action.ts`) are bundled and callable; any other `path#export` id gets a 404. `<Form action={fn}>` on server-rendered pages now carries its action id.
+- **`rpc.ts` and `stream.ts` handlers now deploy** on both targets. Pages whose folder has an `rpc.ts` are no longer prerendered, because `GET` on that path returns the procedure list, as in dev.
+- In production, API route, action and rpc errors return a generic 500 instead of the error message; the real error is logged and passed to `instrumentation.onRequestError`. Built server routes now call `onRequestError` for these endpoints.
+- Fixed `swift-rust dev` never calling `instrumentation.onRequestError` for API route errors. It referenced an undefined variable, and the resulting error was swallowed.
+
 ## 1.12.0
 
 ### Minor Changes

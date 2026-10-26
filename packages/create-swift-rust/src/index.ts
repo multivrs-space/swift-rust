@@ -498,7 +498,7 @@ async function askQuestions(
 // Fallback pin used when the npm registry can't be reached at scaffold time.
 // Kept in sync with the current swift-rust release so a generated project never
 // advertises an ancient version. `^` still lets it float forward within the major.
-const SWIFT_RUST_FALLBACK = "^1.12.0";
+const SWIFT_RUST_FALLBACK = "^1.12.1";
 
 // Resolve the newest published swift-rust version so the scaffolded package.json
 // reflects reality (e.g. ^1.10.5) instead of a stale literal like ^1.0.0. A caret

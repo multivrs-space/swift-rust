@@ -6,9 +6,36 @@ export default function ApiRoutesPage() {
     <DocArticle>
       <h1>API routes</h1>
       <p>
-        API routes are <code>route.ts</code> files in the <code>app/</code> directory. They export
+        API routes are <code>route.ts</code> files under <code>app/api/</code>. They export
         functions named after HTTP methods (<code>GET</code>, <code>POST</code>, <code>PUT</code>,{" "}
-        <code>DELETE</code>, etc).
+        <code>DELETE</code>, etc). A <code>route.ts</code> outside <code>app/api/</code> is not
+        routed.
+      </p>
+
+      <h2>The handler context</h2>
+      <p>
+        Each handler receives one object (not Next.js&apos;s <code>(request, {"{ params }"})</code>
+        ):
+      </p>
+      <ul>
+        <li>
+          <code>request</code> — the standard Fetch <code>Request</code>
+        </li>
+        <li>
+          <code>params</code> — dynamic segments; <code>[...slug]</code> is an array
+        </li>
+        <li>
+          <code>query</code> / <code>searchParams</code> — the query string as an object
+        </li>
+        <li>
+          <code>body</code> — the request body, parsed as JSON when possible, otherwise text
+        </li>
+      </ul>
+      <p>
+        Return a <code>Response</code>, a plain object (sent as JSON, using its <code>status</code>{" "}
+        field if present), or a string (sent as <code>text/plain</code>). A method you don&apos;t
+        export gets a 405 with an <code>Allow</code> header; an unknown path under <code>/api</code>{" "}
+        gets a JSON 404.
       </p>
 
       <h2>A simple GET handler</h2>
@@ -63,8 +90,8 @@ export const GET: RouteHandler = async ({ params }) => {
 
       <h2>Cookies and headers</h2>
       <p>
-        The <code>request</code> object exposes <code>cookies</code>, <code>headers</code>, and
-        standard Fetch API methods.
+        <code>request</code> is a standard Fetch <code>Request</code>, so read cookies and headers
+        from <code>request.headers</code>.
       </p>
       <div className="code-block">
         <div className="code-block-header">
@@ -72,7 +99,7 @@ export const GET: RouteHandler = async ({ params }) => {
         </div>
         <pre>
           <code>{`export const POST: RouteHandler = async ({ request }) => {
-  const session = request.cookies.get("session")?.value;
+  const session = request.headers.get("cookie")?.match(/(?:^|; )session=([^;]+)/)?.[1];
   if (!session) return new Response("Unauthorized", { status: 401 });
   return Response.json({ ok: true });
 };`}</code>
@@ -83,6 +110,16 @@ export const GET: RouteHandler = async ({ params }) => {
       <p>
         Return any standard <code>Response</code> object. The framework passes it through unchanged.
         For PDFs, use <code>Response.pdf(tree)</code>.
+      </p>
+
+      <h2>Deploying</h2>
+      <p>
+        <code>swift-rust build</code> bundles every API route. On Multivrs they run in{" "}
+        <code>dist/server.mjs</code> and are listed in <code>multivrs-build.json</code>. On Vercel
+        they run in one function at <code>/_swift-rust/endpoints</code>. In production, an error
+        thrown by a handler returns <code>{'{"error":"Internal error"}'}</code> with status 500; the
+        real error is logged and passed to <code>onRequestError</code> in{" "}
+        <code>instrumentation.ts</code>.
       </p>
     </DocArticle>
   );

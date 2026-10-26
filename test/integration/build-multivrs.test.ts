@@ -4,12 +4,14 @@ import { isBuiltin } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Subprocess, spawn, spawnSync } from "bun";
+import { resolveApiTree, resolveLeafTree } from "../../packages/swift-rust/bin/server-core.mjs";
 import {
   buildMultivrsManifest,
   resolveBuildTarget,
   routeSrc,
   validateMultivrsManifest,
 } from "../../packages/swift-rust/bin/targets.mjs";
+import { ENDPOINT_CASES, runEndpointCase } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const FIX = join(import.meta.dir, "..", "fixtures", "app");
@@ -92,6 +94,51 @@ describe("route src regex", () => {
   });
 });
 
+describe("endpoint resolution matches the dev server's precedence", () => {
+  const dir = (children: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    ...extra,
+    children: Object.entries(children).map(([name, node]) => ({ name, node })),
+  });
+  const api = dir({
+    "[id]": dir({ edit: dir({}, { route: "id-edit" }) }, { route: "id" }),
+    new: dir({}, { route: "new" }),
+    "[...rest]": dir({}, { route: "rest" }),
+    "%5Fprivate-ish": dir({}, { route: "escaped" }),
+    opt: dir({ "[[...slug]]": dir({}, { route: "opt" }) }),
+  });
+  const resolve = (path: string) => resolveApiTree(api, path.split("/").filter(Boolean));
+  test("literal folders win over [param]", () => {
+    expect(resolve("/api/new")).toEqual({ route: "new", params: {} });
+    expect(resolve("/api/7")).toEqual({ route: "id", params: { id: "7" } });
+    expect(resolve("/api/7/edit")).toEqual({ route: "id-edit", params: { id: "7" } });
+  });
+  test("catch-all takes deeper unmatched paths", () => {
+    expect(resolve("/api/7/edit/more")).toEqual({
+      route: "rest",
+      params: { rest: ["7", "edit", "more"] },
+    });
+  });
+  test("optional catch-all matches its base path", () => {
+    expect(resolve("/api/opt")).toEqual({ route: "opt", params: { slug: undefined } });
+    expect(resolve("/api/opt/a/b")).toEqual({ route: "opt", params: { slug: ["a", "b"] } });
+  });
+  test("_segment maps to an escaped %5F folder", () => {
+    expect(resolve("/api/_private-ish")).toEqual({ route: "escaped", params: {} });
+  });
+  test("non-api paths and empty trees resolve to null", () => {
+    expect(resolveApiTree(api, ["blog"])).toBeNull();
+    expect(resolveApiTree(null, ["api"])).toBeNull();
+  });
+  test("leaf resolution returns the folder node with params", () => {
+    const app = dir({ calc: dir({}, { rpc: "calc-rpc" }), "[slug]": dir({}, { stream: "s" }) });
+    expect(resolveLeafTree(app, ["calc"])?.node).toMatchObject({ rpc: "calc-rpc" });
+    expect(resolveLeafTree(app, ["live"])).toMatchObject({
+      node: { stream: "s" },
+      params: { slug: "live" },
+    });
+  });
+});
+
 describe("multivrs build (default target)", () => {
   let vercelJsonBefore = "";
   let manifest: Manifest;
@@ -138,6 +185,24 @@ describe("multivrs build (default target)", () => {
     expect(find("/templated")?.renderMode).toBe("wasm");
     expect(find("/item/a/b")).toBeUndefined();
     expect(find("/_secret")).toBeUndefined();
+  });
+
+  test("API routes, server actions and rpc/stream are listed as server routes", () => {
+    const srcs = manifest.routes.filter((r) => r.renderMode === "ssr").map((r) => r.src);
+    for (const src of [
+      "/api/items/?",
+      "/api/items/[^/]+/?",
+      "/api/files/.+/?",
+      "/api/instrumentation/?",
+      "/api(?:/.*)?",
+      "/_swift-rust/action/?",
+      "/calc/?",
+      "/events/?",
+    ]) {
+      expect(srcs).toContain(src);
+    }
+    const apiCatchAll = srcs.indexOf("/api(?:/.*)?");
+    expect(srcs.indexOf("/api/items/[^/]+/?")).toBeLessThan(apiCatchAll);
   });
 
   test("static dir holds pages, 404, runtime, fonts and island bundles", () => {
@@ -207,6 +272,34 @@ describe("dist/server.mjs at runtime", () => {
   afterAll(() => {
     proc?.kill();
     if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  for (const c of ENDPOINT_CASES) {
+    test(`endpoint contract: ${c.name}`, () => runEndpointCase(base, c));
+  }
+
+  test("API errors return a generic 500 and reach instrumentation.onRequestError", async () => {
+    const res = await fetch(`${base}/api/boom`);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal error" });
+    const inst = (await (await fetch(`${base}/api/instrumentation`)).json()) as { lastError: string | null };
+    expect(inst.lastError).toBe("/api/boom: secret internal detail");
+  });
+
+  test("only registered action modules can be called", async () => {
+    const res = await fetch(`${base}/_swift-rust/action`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actionId: "src/app/layout.tsx#default", args: [] }),
+    });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+  });
+
+  test("<Form action> on a server-rendered page carries the action id", async () => {
+    const html = await (await fetch(`${base}/serveraction-ssr`)).text();
+    expect(html).toContain('action="/_swift-rust/action"');
+    expect(html).toContain('value="src/app/actions.ts#addItem"');
   });
 
   test("serves dynamic [param] routes with .env.production defaults and islands", async () => {
