@@ -3,6 +3,7 @@ import { NpmDownloads } from "@/components/npm-downloads";
 import { posts } from "@/lib/posts";
 import { siteConfig } from "@/lib/site.config";
 import { Link } from "swift-rust";
+import { Version } from "@/components/live-version";
 
 const CREATE_COMMAND = "bun create swift-rust@latest";
 
@@ -181,7 +182,7 @@ export default function HomePage() {
                 NEW
               </span>
               <span>
-                Swift Rust v{siteConfig.version} — 19.6× faster SSR &amp; Single Binary Deploy
+                Swift Rust v<Version /> — 19.6× faster SSR &amp; Single Binary Deploy
               </span>
               <ArrowRightIcon className="h-3.5 w-3.5 text-fg-subtle transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
             </Link>
@@ -365,10 +366,10 @@ export default function HomePage() {
               </svg>
               <div className="relative z-10">
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-white/15 px-2.5 py-0.5 font-mono text-[0.7rem] font-semibold text-white">
-                  RELEASE v{siteConfig.version}
+                  RELEASE v<Version />
                 </span>
                 <h3 className="mt-4 font-display text-2xl font-bold tracking-tight text-white">
-                  Swift Rust {siteConfig.releaseLine}
+                  Swift Rust <Version part="line" />
                 </h3>
                 <p className="mt-2 text-[0.875rem] leading-relaxed text-orange-50/90">
                   The power of full-stack React 19 compiled to a single Rust executable. Migrate in one
@@ -497,7 +498,7 @@ export default function HomePage() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-4">
                   <div>
                     <h3 className="font-display text-[1rem] font-bold text-fg">
-                      Swift Rust v{siteConfig.version} vs. Next.js 16.4
+                      Swift Rust v<Version /> vs. Next.js 16.4
                     </h3>
                     <p className="text-[0.78rem] text-fg-subtle">
                       12 routes · Dynamic SSR + RSC + API · Lower bar is faster / leaner

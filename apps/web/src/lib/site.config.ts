@@ -3,8 +3,9 @@
  *
  * Override URLs at build time with environment variables (e.g. in the Vercel
  * dashboard or a local .env). The version is the latest `swift-rust`
- * published to npm (fetched at build time), so the site never advertises an
- * unreleased version. Set SWIFT_RUST_VERSION to override it.
+ * published to npm when the site was built (SWIFT_RUST_VERSION overrides it);
+ * <Version /> renders it and LiveVersionScript replaces it in the browser with
+ * the current npm version, so a release shows up without a redeploy.
  */
 import { createRequire } from "node:module";
 import { join } from "node:path";

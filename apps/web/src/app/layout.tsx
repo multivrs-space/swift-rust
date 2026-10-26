@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import "./globals.css";
 import { Analytics } from "@/components/analytics";
+import { LiveVersionScript } from "@/components/live-version";
 import { Footer } from "@/components/footer";
 import { Nav } from "@/components/nav";
 import { siteConfig } from "@/lib/site.config";
@@ -63,6 +64,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <main className="min-h-[calc(100vh-4.25rem)]">{children}</main>
         <Footer />
         <Analytics />
+        <LiveVersionScript />
       </body>
     </html>
   );
