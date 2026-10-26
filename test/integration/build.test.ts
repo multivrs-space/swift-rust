@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { expectIsolatedRouteContext } from "./endpoint-contract";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -17,7 +17,9 @@ const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 const listFiles = (dir: string): string[] =>
   readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
-    return statSync(full).isDirectory() ? listFiles(full) : [relative(OUT, full)];
+    return statSync(full).isDirectory()
+      ? listFiles(full)
+      : [relative(OUT, full).split(sep).join("/")];
   });
 
 beforeAll(() => {

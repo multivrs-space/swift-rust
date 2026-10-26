@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, unlinkSync, watch as fsWatch } from "node:fs";
 import { join, resolve, extname, relative, dirname, basename, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import {
@@ -36,6 +36,8 @@ import {
   isLocalBuildSpecifier,
   shouldExternalizeBuildSpecifier,
 } from "./runtime/path-specifier.mjs";
+
+const toPosix = (p) => p.split(sep).join("/");
 
 if (!isSupportedBunVersion(process.versions?.bun)) {
   process.stderr.write(`${unsupportedBunMessage(process.versions?.bun)}\n`);
@@ -823,7 +825,7 @@ function cacheWrapperSource(abs, temps) {
   const rawPath = join(dirname(abs), rawName);
   writeFileSync(rawPath, src);
   temps.push(rawPath);
-  const tag = relative(cwd, abs);
+  const tag = toPosix(relative(cwd, abs));
   let out = `import { cache as __cache } from "swift-rust/cache";
 import * as __real from ${JSON.stringify(rawPath)};
 const __opts = { tags: ${JSON.stringify([tag])} };
@@ -911,7 +913,7 @@ function makeServerActionClientPlugin() {
           if (!isUserActionFile(args.path)) return undefined;
           const src = readFileSync(args.path, "utf8");
           if (/<[a-zA-Z_][\w.-]*(\s|>|\/)|React\.createElement\s*\(|_jsx(?:s|DEV)?\s*\(/.test(src)) return undefined;
-          const rel = relative(cwd, args.path);
+          const rel = toPosix(relative(cwd, args.path));
           const exports = [];
           for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([a-zA-Z0-9_$]+)/g)) {
             exports.push(m[1]);
@@ -941,7 +943,7 @@ function makeServerActionServerPlugin() {
           if (!isUserActionFile(args.path)) return undefined;
           const src = readFileSync(args.path, "utf8");
           if (/<[a-zA-Z_][\w.-]*(\s|>|\/)|React\.createElement\s*\(|_jsx(?:s|DEV)?\s*\(/.test(src)) return undefined;
-          const rel = relative(cwd, args.path);
+          const rel = toPosix(relative(cwd, args.path));
           const exports = [];
           for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([a-zA-Z0-9_$]+)/g)) {
             exports.push(m[1]);
@@ -1105,7 +1107,7 @@ async function buildSsrModule(filePath, gen) {
   try {
     const mod = await import(pathToFileURL(tmp).href);
     if (isUserActionFile(filePath)) {
-      const rel = relative(cwd, filePath);
+      const rel = toPosix(relative(cwd, filePath));
       for (const [k, v] of Object.entries(mod)) {
         if (typeof v === "function") {
           v.$$actionId = `${rel}#${k}`;
@@ -1125,7 +1127,7 @@ async function loadModule(filePath, { bust = false } = {}) {
   try {
     const mod = await import(url);
     if (isUserActionFile(filePath)) {
-      const rel = relative(cwd, filePath);
+      const rel = toPosix(relative(cwd, filePath));
       for (const [k, v] of Object.entries(mod)) {
         if (typeof v === "function") {
           v.$$actionId = `${rel}#${k}`;
@@ -2983,7 +2985,7 @@ ${fullHead}
 
 async function tryHmrClient() {
   try {
-    const file = join(dirname(new URL(import.meta.url).pathname), "runtime", "hmr-client.js");
+    const file = join(dirname(fileURLToPath(import.meta.url)), "runtime", "hmr-client.js");
     return readFileSync(file, "utf8");
   } catch {
     return null;
@@ -2992,7 +2994,7 @@ async function tryHmrClient() {
 
 function readNavigatorClient() {
   try {
-    const file = join(dirname(new URL(import.meta.url).pathname), "runtime", "navigator.js");
+    const file = join(dirname(fileURLToPath(import.meta.url)), "runtime", "navigator.js");
     return readFileSync(file, "utf8");
   } catch {
     return null;
