@@ -1,6 +1,6 @@
 {
   "name": "@swift-rust/codemod",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Automated refactors for swift-rust projects.",
   "license": "MIT",
   "type": "module",

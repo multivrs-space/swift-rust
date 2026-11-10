@@ -1,5 +1,27 @@
 # swift-rust
 
+## 1.13.0
+
+### Minor Changes
+
+- 1314a72: Dev errors now print rustc-style diagnostics with a code, a source frame, and a concrete suggested fix. The dev indicator is a transparent circular button with the Swift Rust mark, an issues list, route and performance details, and preferences.
+- d075c52: Add `<SafeHtml>` origin-aware cryptographic HTML verification boundary and `createTrustedHtml` to replace `dangerouslySetInnerHTML`. Add embedded WebKit JavaScriptCore C-FFI engine in `crates/runtime`, WASM SPA navigator in `crates/runtime`, and pure-Rust UI component system in `crates/swift-rust-core`.
+- d075c52: Add Server Actions (`"use server"`), `<Form action={...}>`, Partial Prerendering (PPR) streaming shell, `<Script>` component, and native Rust router matchit dynamic segment normalization.
+
+### Patch Changes
+
+- cd67ce4: Keep Windows drive paths, UNC paths, and POSIX absolute paths inside development SSR bundles so
+  the dev server no longer triggers a zero-chunk Bun build on Windows.
+- 88834c0: Automatically advance to the next available port when the requested development port is already
+  in use.
+- 1314a72: Point package homepage and repository metadata at swift-rust.multivrs.space and github.com/multivrs-space/swift-rust.
+- Updated dependencies [1314a72]
+  - @swift-rust/font@0.3.3
+  - @swift-rust/image@1.1.3
+  - @swift-rust/video@0.2.3
+  - @swift-rust/pdf@0.2.4
+  - @swift-rust/env@0.2.3
+
 ## 1.12.1
 
 ### Patch Changes
